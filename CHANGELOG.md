@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.2.0 — a Microsoft Graph backend, for the mailboxes IMAP cannot reach
+
+### Added — `provider: "graph"`
+
+IMAP is a dead end for a large share of Microsoft 365 organisations. Tenants disable it as a
+hardening step, usually right after a phishing incident; it is an admin-only setting a normal
+employee can neither inspect nor change; and asking IT to reopen it is asking them to reverse
+an incident response. Graph is not gated by that switch, consents once for a whole tenant,
+and is a much easier approval — because granting it does not require reopening a protocol
+someone deliberately closed.
+
+`tools/msgraph.py` mirrors `mailtool.py`'s command surface — `auth`, `doctor`, `fetch`,
+`body`, `find` — and emits the same JSON, so `ingest.py`, the dashboard and the skills consume
+either backend unchanged. Set `provider` to `graph` on an account; no `imap_host` is needed.
+
+> ### ⚠ Not yet verified against a live tenant
+>
+> Every branch is covered by tests, but those tests use a fake transport. **No request in
+> this backend has ever reached graph.microsoft.com, no token has ever been issued, and no
+> real mailbox has ever been read.** Unknown specifically: whether the PKCE round trip
+> completes against Entra, whether `$skip` paging behaves as assumed, and whether a real 429
+> is shaped the way the tests assume. Expect one debugging session. **IMAP remains the
+> verified path**, and `auth` says so on every run until that changes.
+
+**Read-only by design.** The token requests `Mail.Read`, so the tenant refuses a write even
+if a bug attempted one — a guarantee enforced outside this code, which is worth more than any
+check inside it. There is deliberately no `act` command. Note Graph has no move-only scope:
+"archive the noise" and "permanently delete anything" arrive as the same grant, which is why
+widening it should be a decision rather than a default.
+
+**Auth is authorization-code + PKCE, not device code.** Device code is the flow used in
+device-code phishing and security teams alert on it specifically; generating that signal for a
+legitimate mail tool is an unforced cost. PKCE runs through the system browser, so it inherits
+whatever session and Conditional Access state already lets the user's webmail work.
+
+### Throttling, treated as a first-class concern
+
+Graph frequently answers 429 with **no `Retry-After`**, so the fallback path is the common
+path rather than a corner case — and inside a per-user penalty window a sub-10-second retry
+essentially never succeeds while every 429 *extends* the penalty. A textbook 1s/2s/4s backoff
+therefore makes the block longer. So:
+
+- a hard **10-second floor** on fallback backoff, with jitter and a ceiling;
+- the server's `Retry-After` obeyed exactly when present;
+- **throttled** and **failed** as distinct exception types — a 403 will never become a 200,
+  and retrying it is pointless and looks like an attack;
+- a run-level circuit breaker counting throttle-outs **cumulatively**, because real throttling
+  interleaves with successes and a consecutive-only counter never trips;
+- a per-run request cap, since a paging-loop bug is the real ban risk, not daily volume;
+- and the one that matters most: **a throttled sweep is labelled `"complete": false`, carries
+  an explicit warning, and exits non-zero**, so a partial view can never be ingested as a full
+  look. An absence in a sample is not an all-clear.
+
+### Also in this release
+
+- **`find` reports duplicates.** `internetMessageId` is not reliably unique within a mailbox —
+  a self-CC, a forwarded loop, or one message filed in two folders all produce copies. It now
+  fetches several, returns the most recent deliberately, and says how many exist.
+- **A size ceiling on `body`.** `/$value` returns full MIME including attachments; an
+  unbounded read is one large attachment away from taking the process down. Configurable with
+  `--max-body-mb`.
+- **Graph errors exit cleanly with guidance**, never a traceback. A 403 — the likeliest first
+  run, when the registration lacks `Mail.Read` or consent was never granted — names the
+  probable causes and uses a distinct exit code from "throttled, come back later".
+- **Token writes are one transaction** rather than three separate encrypt-decrypt cycles of
+  the whole credential store, which could previously leave an access token with no matching
+  refresh token.
+- **`ms_authority` now means the same thing to both backends.** Two backends reading one
+  config key and disagreeing about its default is a bug that only appears when someone
+  switches provider.
+- The onboarding skill documents the two registration choices that cause almost every
+  first-run failure: the redirect URI platform must be **"Mobile and desktop applications"**,
+  not "Web", and the permission is **`Mail.Read`** — `Mail.ReadBasic` looks safer and is
+  useless, because it strips message bodies.
+
+### Internal
+
+The Graph client takes its transport, token source, clock and credential store as
+constructor arguments. Its tests inject fakes instead of reassigning module globals — which
+matters because the first version did the latter, one test left a stub in place, and the next
+test failed for a reason that had nothing to do with the code under test. The 401 path also
+*writes* to the credential store, so running that suite wrote into the real store of whoever
+ran it. The suite now touches no network, no credential store and no wall clock, and runs in
+under a fifth of a second instead of ninety.
+
 ## 0.1.1 — the install path actually works
 
 0.1.0 could not be installed. Everything below came from one careful defect report against a

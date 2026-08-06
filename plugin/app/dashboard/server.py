@@ -728,6 +728,72 @@ CONFIG_DIR = os.path.join(os.path.dirname(HERE), "config")
 PROTECTED_FILE = os.path.join(CONFIG_DIR, "protected.local.json")
 
 
+ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "accounts.json")
+
+
+def api_setup(conn, q):
+    """What still needs doing before this install is useful, and how to do it.
+
+    A FRESH INSTALL USED TO LOOK BROKEN RATHER THAN NEW. Every panel rendered an honest
+    empty state - no runs, no senders, nothing to show - which is indistinguishable from a
+    tool that is failing. The one thing it never said was the only thing a new user needs:
+    you have no mailboxes yet, here is the next step.
+
+    Reported as STATE PLUS AN ACTION, per step, derived from the same files the tool
+    actually reads. Not a wizard that remembers where you got to - a wizard's memory can
+    disagree with reality, and then it walks you past a step that silently did not take.
+    Each check below re-derives its answer, so the panel is correct even if you edited the
+    files by hand, and it disappears on its own once the answers are all yes.
+    """
+    steps = []
+
+    # 1. mailboxes
+    accounts, acc_err = [], None
+    try:
+        with open(ACCOUNTS_FILE, encoding="utf-8-sig") as f:
+            accounts = json.load(f).get("accounts") or []
+    except FileNotFoundError:
+        acc_err = "config/accounts.json does not exist yet"
+    except Exception as e:
+        acc_err = "config/accounts.json is unreadable (%s: %s)" % (type(e).__name__, e)
+    steps.append({
+        "key": "accounts", "title": "Connect a mailbox",
+        "done": bool(accounts) and not acc_err,
+        "detail": (acc_err or ("%d mailbox%s configured" % (len(accounts),
+                   "" if len(accounts) == 1 else "es")) if accounts or acc_err
+                   else "no mailboxes yet"),
+        "action": "Run the onboard-mailbox skill, or ask your agent to add a mailbox.",
+    })
+
+    # 2. the guard - deliberately its own step, because it is the safety-critical one
+    prot = load_protected()
+    steps.append({
+        "key": "protected", "title": "Say whose mail must never be auto-trashed",
+        "done": bool(prot["configured"]),
+        "detail": (prot["why"] or "%d protected name%s" % (len(prot["names"]),
+                   "" if len(prot["names"]) == 1 else "s")),
+        "action": "Edit config/protected.local.json and list the people, employers, banks "
+                  "and correspondents you must never miss. Until then the dashboard "
+                  "refuses to write any auto-trash rule at all - which is the safe "
+                  "direction, not a failure.",
+    })
+
+    # 3. data
+    n_runs = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+    steps.append({
+        "key": "runs", "title": "Ingest your first run",
+        "done": n_runs > 0,
+        "detail": ("%d run%s ingested" % (n_runs, "" if n_runs == 1 else "s")) if n_runs
+                  else "no runs yet - every panel below is empty because nothing has been "
+                       "swept, not because anything is wrong",
+        "action": "Sweep with tools/mailtool.py fetch, then ingest the run JSON.",
+    })
+
+    return {"steps": steps,
+            "complete": all(s["done"] for s in steps),
+            "outstanding": [s["key"] for s in steps if not s["done"]]}
+
+
 def load_protected():
     """WHO MATTERS TO YOU IS CONFIGURATION, NOT CODE.
 
@@ -1449,6 +1515,7 @@ def api_whoami(conn, q):
 
 API = {
     "/api/whoami": api_whoami,
+    "/api/setup": api_setup,
     "/api/runs": api_runs,
     "/api/run": api_run,
     "/api/trash/stats": api_trash_stats,

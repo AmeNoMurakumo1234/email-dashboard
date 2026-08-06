@@ -81,6 +81,19 @@ def set_value(account: str, field: str, value: str) -> None:
     save(store)
 
 
+def set_values(account: str, fields: dict) -> None:
+    """Write several fields in ONE read-modify-write.
+
+    Storing an OAuth result is three fields - access token, refresh token, expiry - and
+    doing them one at a time is three full decrypt-modify-encrypt cycles of the entire
+    store. Wasteful, and genuinely racy: another writer between two of them loses whatever
+    it wrote. One transaction, so a token set lands whole or not at all.
+    """
+    store = load()
+    store.setdefault(account, {}).update({k: v for k, v in fields.items() if v is not None})
+    save(store)
+
+
 USAGE = """usage:
   python tools/credstore.py list
   python tools/credstore.py set <account> <field>   # prompts if a terminal, else stdin

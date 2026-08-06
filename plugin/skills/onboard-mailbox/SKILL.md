@@ -103,10 +103,38 @@ python tools/mailtool.py auth-ms --account <address>
 
 Read them the code and URL it prints; they approve it in their own browser.
 
-**Note for Microsoft 365 organisations:** many tenants disable IMAP as a hardening step, and
-it is an admin-only setting a normal employee can neither check nor change. If `doctor`
-fails with a login error on a work mailbox, this is the first thing to suspect, and the
-answer may legitimately be that IMAP is not coming back.
+**Note for Microsoft 365 organisations:** many tenants disable IMAP as a hardening step —
+usually right after a phishing incident — and it is an admin-only setting a normal employee
+can neither check nor change. If `doctor` fails with a login error on a work mailbox, suspect
+this first, and accept that the answer may legitimately be that IMAP is not coming back.
+
+For those mailboxes there is a second backend: **`provider: "graph"`**, which talks to
+Microsoft Graph instead of IMAP. It is not gated by the IMAP switch, consents once for a
+whole tenant, and is an easier approval for IT than reopening a protocol they closed on
+purpose. Set `provider` to `graph` (no `imap_host` needed) and use `tools/msgraph.py` in
+place of `mailtool.py` — same commands, same JSON:
+
+```
+python tools/msgraph.py auth   --account <address>
+python tools/msgraph.py doctor
+python tools/msgraph.py fetch  --account <address> --days 2 --limit 200
+```
+
+The app registration differs from the IMAP one in two ways that cause almost all first-run
+failures: the redirect URI platform must be **"Mobile and desktop applications"**, not
+"Web" — Web demands a client secret and rejects the flow, failing late and without naming
+the cause — and the delegated permission is **`Mail.Read`** plus `offline_access` on
+Microsoft Graph. `Mail.ReadBasic` looks safer and is useless: it strips message bodies, so
+no snippets and no link extraction. Redirect URI is `http://localhost` with no port.
+
+**The Graph backend has not yet been confirmed against a live tenant.** Every branch is
+tested, but with a fake transport — no request has reached Graph and no real mailbox has
+been read. Treat the first run as a debugging session, and report what happens. IMAP remains
+the verified path.
+
+It is also **read-only by design**: the token requests `Mail.Read`, so a bug cannot move or
+delete anything even if it tried — the refusal is enforced by Microsoft, outside this code.
+There is deliberately no `act` command.
 
 **Anything else** — set `provider` to anything other than `microsoft` and give the
 provider's `imap_host`; store the password under the field `password` (or `app_password`,
