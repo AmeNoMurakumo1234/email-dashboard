@@ -49,9 +49,20 @@ def api_runs(conn, q):
 
 
 def _resolve_date(conn, q):
+    """Resolve ?date= to a run that EXISTS, or to None.
+
+    It used to return whatever the caller asked for, unchecked. So a client with no runs
+    yet sent the literal string "null", and the page cheerfully reported "showing run for
+    null" - a value that was never a date, echoed back as though it had been looked up.
+    Small, but it is the same shape as every other defect here: an answer stated with more
+    confidence than the lookup behind it.
+    """
     date = (q.get("date") or [None])[0]
-    if date and date != "latest":
-        return date
+    if date and date not in ("latest", "null", "undefined", "None"):
+        row = conn.execute("SELECT run_date FROM runs WHERE run_date = ?", (date,)).fetchone()
+        if row:
+            return date
+        return None                      # asked for a run that does not exist
     row = conn.execute("SELECT run_date FROM runs ORDER BY run_date DESC LIMIT 1").fetchone()
     return row["run_date"] if row else None
 
@@ -770,6 +781,10 @@ def api_setup(conn, q):
     steps.append({
         "key": "protected", "title": "Say whose mail must never be auto-trashed",
         "done": bool(prot["configured"]),
+        # The RESOLVED names, so the editor seeds from what the loader actually honours
+        # rather than from what the file appears to say. Placeholders it ignores must never
+        # show up in the editor looking like they are protecting somebody.
+        "names": prot["names"],
         "detail": (prot["why"] or "%d protected name%s" % (len(prot["names"]),
                    "" if len(prot["names"]) == 1 else "s")),
         "action": "Edit config/protected.local.json and list the people, employers, banks "
@@ -792,6 +807,79 @@ def api_setup(conn, q):
     return {"steps": steps,
             "complete": all(s["done"] for s in steps),
             "outstanding": [s["key"] for s in steps if not s["done"]]}
+
+
+def api_protected_names(conn, q, body=None):
+    """Write the protected-names list from the browser.
+
+    THE SAFETY-CRITICAL FILE IS THE ONE MOST LIKELY TO BE LEFT AS SHIPPED PLACEHOLDERS,
+    because filling it in meant opening a JSON file in an editor. That is where a tool like
+    this loses the people it would help most, and it is the wrong place to lose them: while
+    the list is empty the guard refuses every rule, so the tool is least useful exactly when
+    someone is least equipped to fix it.
+
+    ONLY the names are writable here. Concepts, workflow senders and the link domain are
+    deliberately not - they are not what a new user needs on day one, and a write endpoint
+    that can rewrite the whole guard is a bigger thing to defend than one that can append to
+    a list of names.
+
+    Everything else in the file is preserved byte-for-byte where it can be: the file is
+    re-read, the one key is replaced, and the rest is written back as it was found.
+    """
+    body = body or {}
+    names = body.get("names")
+    if not isinstance(names, list):
+        return {"ok": False, "error": "names must be a list"}
+    clean, seen = [], set()
+    for n in names:
+        n = str(n).strip()
+        # A leading underscore is how the template marks a line as commentary, so a name
+        # starting with one would be silently ignored by the loader - refuse it here rather
+        # than accept a name that will never match anything.
+        if not n or n.startswith("_"):
+            continue
+        if n.lower() in seen:
+            continue
+        seen.add(n.lower())
+        clean.append(n)
+    if not clean:
+        return {"ok": False,
+                "error": "refusing to write an empty list - that would leave the guard "
+                         "unconfigured, which it already is. Add at least one name."}
+
+    try:
+        with open(PROTECTED_FILE, encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = {}
+    except Exception as e:
+        return {"ok": False, "error": "%s is unreadable (%s: %s) - fix or delete it first"
+                                      % (os.path.basename(PROTECTED_FILE),
+                                         type(e).__name__, e)}
+    if not isinstance(cfg, dict):
+        return {"ok": False, "error": "protected config is not a JSON object"}
+
+    cfg["protected_names"] = clean
+    cfg.setdefault("protected_concepts", ["money (bills, receipts, banking)",
+                                          "family & people", "account & security", "medical"])
+    tmp = PROTECTED_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp, PROTECTED_FILE)          # atomic: never a half-written guard
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return {"ok": False, "error": "could not write: %s: %s" % (type(e).__name__, e)}
+
+    # Re-derive rather than report what we intended to write. The whole point of this file
+    # is that the loader's opinion is the one that counts.
+    prot = load_protected()
+    return {"ok": True, "written": len(clean), "configured": prot["configured"],
+            "names": prot["names"], "why": prot["why"]}
 
 
 def load_protected():
@@ -1539,6 +1627,7 @@ API = {
 # URL is reached - a link, a prefetch, an image tag.
 WRITE_API = {
     "/api/ack": api_ack,
+    "/api/protected-names": api_protected_names,
     "/api/sender-rule": api_sender_rule,
     "/api/host-review": api_host_review,
 }

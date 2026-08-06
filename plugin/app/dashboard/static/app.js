@@ -172,10 +172,18 @@ async function init() {
   $("#acctModal").addEventListener("click", (e) => {
     if (e.target.id === "acctModal") $("#acctModal").hidden = true;
   });
+  $("#prClose").addEventListener("click", () => { $("#protModal").hidden = true; });
+  $("#prSave").addEventListener("click", saveProtectedNames);
+  document.addEventListener("click", (e) => {
+    if (e.target.id === "protModal") $("#protModal").hidden = true;  // backdrop dismiss
+  });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !$("#acctModal").hidden) $("#acctModal").hidden = true;
+    if (e.key !== "Escape") return;
+    if (!$("#protModal").hidden) $("#protModal").hidden = true;
+    else if (!$("#acctModal").hidden) $("#acctModal").hidden = true;
   });
 
+  loadSetup().catch(() => {});     // first thing a new install needs, and silent once done
   await loadAcks();                // before the first render, so state is right immediately
   await loadRun();
   loadWorkflowActions().catch(() => {}); // never let this panel block the rest of the page
@@ -186,7 +194,10 @@ async function init() {
 }
 
 async function loadRun() {
-  const data = await get("/api/run?date=" + encodeURIComponent(currentDate));
+  // No runs yet means no date to ask for. Sending encodeURIComponent(null) put the literal
+  // string "null" on the wire, which the server then echoed back as a run date.
+  const data = await get("/api/run" +
+    (currentDate ? "?date=" + encodeURIComponent(currentDate) : ""));
   $("#subtitle").textContent = data.run_date ? `showing run for ${data.run_date}` : "no runs yet";
   $("#summaryDate").textContent = data.run_date ? `(${data.run_date})` : "";
 
@@ -1180,6 +1191,100 @@ async function openAccount(addr) {
         `<span class="muted">${esc(m.importance || "")}${m.acked ? " - handled" : ""}</span>` +
         `</div>`).join("")
       : '<div class="muted">nothing flagged for this box</div>') + "</div>";
+}
+
+// ---------- first run: what still needs doing, and how to do it ----------
+
+async function loadSetup() {
+  let data;
+  try { data = await get("/api/setup"); } catch (e) { return; }
+  const panel = $("#setupPanel");
+  // Hidden the moment every step is done. A setup panel that lingers becomes furniture,
+  // and furniture is not read - so its presence has to keep meaning something.
+  panel.hidden = !!data.complete;
+  if (data.complete) return;
+
+  const steps = data.steps || [];
+  const left = steps.filter((s) => !s.done).length;
+  $("#setupCount").textContent =
+    `(${steps.length - left} of ${steps.length} done)`;
+
+  const wrap = $("#setupList");
+  wrap.innerHTML = "";
+  steps.forEach((s) => {
+    const row = el("div", "setup-row" + (s.done ? " done" : ""));
+    row.innerHTML =
+      `<span class="setup-tick">${s.done ? "✓" : "○"}</span>` +
+      `<div class="setup-body">` +
+      `<div class="setup-title">${esc(s.title)}</div>` +
+      `<div class="setup-detail">${esc(s.detail)}</div>` +
+      (s.done ? "" : `<div class="setup-action">${esc(s.action)}</div>`) +
+      `</div>`;
+    wrap.appendChild(row);
+  });
+
+  // The guard is the one step worth acting on from here: it is safety-critical, it is the
+  // file most likely to be left as shipped placeholders, and asking someone to hand-edit
+  // JSON is where this tool loses the people it would help most.
+  const guard = steps.find((s) => s.key === "protected" && !s.done);
+  if (guard) {
+    const btn = el("button", "btn setup-fix");
+    btn.textContent = "Fill in the protected list";
+    btn.addEventListener("click", openProtectedEditor);
+    wrap.appendChild(btn);
+  }
+}
+
+async function openProtectedEditor() {
+  const modal = $("#protModal");
+  const box = $("#prNames");
+  const status = $("#prStatus");
+  status.textContent = "";
+  // Seed from what the SERVER currently resolves, not from the file: placeholders that the
+  // loader ignores must not appear here as if they were protecting someone.
+  try {
+    const s = await get("/api/setup");
+    const step = (s.steps || []).find((x) => x.key === "protected");
+    box.value = (step && step.names ? step.names : []).join("\n");
+    $("#prMeta").textContent = step ? step.detail : "";
+  } catch (e) {
+    box.value = "";
+  }
+  modal.hidden = false;
+  box.focus();
+}
+
+async function saveProtectedNames() {
+  const btn = $("#prSave");
+  const status = $("#prStatus");
+  const names = $("#prNames").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  btn.disabled = true;
+  status.textContent = "saving...";
+  try {
+    const res = await fetch("/api/protected-names", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Dashboard": "1" },
+      body: JSON.stringify({ names }),
+    }).then((x) => x.json());
+    if (!res.ok) throw new Error(res.error || "refused");
+    // Report what the server RE-DERIVED, never what we sent. The loader's opinion is the
+    // one that counts, and this panel exists because the two once disagreed silently.
+    status.textContent = res.configured
+      ? `saved — ${res.written} name(s), guard is now armed`
+      : `saved, but still unconfigured: ${res.why}`;
+    // Re-seed the box and the header from what the server RESOLVED, so what is on screen
+    // after a save is the guard's actual state - not the text I typed, and not a stale
+    // "no protected names yet" sitting above a list that now has three.
+    $("#prNames").value = (res.names || []).join("\n");
+    $("#prMeta").textContent = res.configured
+      ? `${res.names.length} name(s) protected`
+      : res.why;
+    await loadSetup();
+  } catch (e) {
+    status.textContent = "refused: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ---------- workflow actions: the links that must not be missed ----------

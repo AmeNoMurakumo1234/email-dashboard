@@ -18,6 +18,18 @@
     </div>
   </header>
 
+  <!-- FIRST RUN. A fresh install used to look BROKEN rather than NEW: every panel rendered
+       an honest empty state, which is indistinguishable from a tool that is failing, and the
+       one thing it never said was the only thing a new user needs - you have no mailboxes
+       yet, here is the next step. Shown only while something is outstanding, and it removes
+       itself the moment the last step is done, so it never becomes furniture. -->
+  <section class="panel setup" id="setupPanel" hidden>
+    <h2 class="setup-head">
+      <span>👋 Finish setting up <span class="muted" id="setupCount"></span></span>
+    </h2>
+    <div id="setupList"></div>
+  </section>
+
   <!-- WORKFLOW ACTIONS. The one category where a missed link costs something that cannot
        be recovered - a questionnaire due before a visit, a video appointment whose join
        link arrives half an hour beforehand. Sits above everything else and hides itself
@@ -174,6 +186,36 @@
       <h2 class="sticky">Summary — what I'm reporting <span class="muted" id="summaryDate"></span></h2>
       <div id="summary"></div>
     </section>
+  </div>
+
+  <!-- THE GUARD, EDITABLE WITHOUT AN EDITOR. This list is what stops the dashboard from
+       ever auto-trashing mail from someone who matters, and it used to be reachable only by
+       opening a JSON file - which is exactly where a tool like this loses the people it
+       would help most. One name per line; the server re-derives the truth after writing. -->
+  <div id="protModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="prTitle">
+      <div class="modal-head">
+        <div class="mv-titles">
+          <h3 id="prTitle">Whose mail must never be auto-trashed</h3>
+          <div class="mv-meta" id="prMeta"></div>
+        </div>
+        <button id="prClose" class="btn" type="button">Close</button>
+      </div>
+      <div class="modal-body">
+        <p class="prot-help">
+          One per line — family, your employer, your bank, your doctor, anyone whose mail you
+          must never miss. Matched case-insensitively as a substring, so a surname covers its
+          variants. While this list is empty the dashboard refuses to write any auto-trash
+          rule at all: that is the safe direction, not a failure.
+        </p>
+        <textarea id="prNames" spellcheck="false" rows="12"
+                  placeholder="a surname&#10;your bank&#10;your employer"></textarea>
+        <div class="prot-foot">
+          <span class="muted" id="prStatus"></span>
+          <button id="prSave" class="btn" type="button">Save</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="acctModal" class="modal" hidden>

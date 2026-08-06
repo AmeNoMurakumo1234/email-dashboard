@@ -265,6 +265,30 @@ td.acctcell { color: var(--muted); font-size: 12px; word-break: break-all; }
 .disp.kept     { color: #4ade80; border-color: #4ade8055; }
 .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
 
+/* ---- first run: present only while something is outstanding ---- */
+.panel.setup { border-color: var(--purple); border-left: 3px solid var(--purple); }
+.setup-head { display: flex; justify-content: space-between; align-items: baseline;
+  margin: 0 0 10px; font-size: 15px; }
+.setup-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0;
+  border-top: 1px solid var(--border); }
+.setup-row:first-child { border-top: none; }
+.setup-tick { flex: 0 0 auto; font-size: 15px; line-height: 1.4; color: var(--muted); }
+.setup-row.done .setup-tick { color: var(--green); }
+.setup-row.done .setup-title { color: var(--muted); text-decoration: line-through; }
+.setup-body { min-width: 0; }
+.setup-title { font-weight: 600; font-size: 14px; }
+.setup-detail { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.setup-action { font-size: 12.5px; margin-top: 4px; color: var(--text); }
+.setup-fix { margin-top: 10px; }
+
+/* the guard editor */
+.prot-help { color: var(--muted); font-size: 13px; margin: 0 0 10px; line-height: 1.5; }
+#prNames { width: 100%; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  font: 13px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace; resize: vertical; }
+.prot-foot { display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; margin-top: 10px; }
+
 /* ---- workflow actions: loudest thing on the page, absent when there is nothing ---- */
 .panel.workflow { border-color: #3b82f6; border-left: 3px solid #3b82f6; }
 .wf-head { display: flex; justify-content: space-between; align-items: baseline;

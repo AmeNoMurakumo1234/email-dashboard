@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.3.0 — a fresh install stops looking broken
+
+The observation this release answers: *"the audience this tool would most help is precisely
+the audience least able to complete the setup — and config-file authoring is the single
+largest drop-off point."*
+
+### Added — a first-run panel
+
+A new install renders an honest empty state in every panel, which is indistinguishable from
+a tool that is failing. The one thing it never said was the only thing a new user needs.
+
+`/api/setup` reports each step as **state plus an action**, re-derived from the same files
+the tool actually reads — deliberately not a wizard that remembers where you got to, because
+a wizard's memory can disagree with reality and then walk you past a step that silently did
+not take. The panel appears only while something is outstanding and removes itself when the
+last step is done, so its presence keeps meaning something.
+
+### Added — the protected list is editable in the browser
+
+This is the safety-critical file and, until now, the one most likely to be left as shipped
+placeholders — because filling it in meant opening JSON in an editor. That is the wrong place
+to lose someone: while the list is empty the guard refuses every rule, so the tool is least
+useful exactly when its owner is least equipped to fix it.
+
+One name per line, written atomically, every other key in the file preserved. The endpoint
+carries the same CSRF guard as the rule writer, refuses an empty list, and refuses
+underscore-prefixed placeholders — which the loader ignores, so accepting them would store
+names that could never match anything. Only the names are writable; concepts, workflow
+senders and the verification domain are not, because a write endpoint that can rewrite the
+whole guard is a bigger thing to defend than one that appends to a list.
+
+After saving, the panel re-renders from what the server **re-derived**, never from what was
+typed. The loader's opinion is the one that counts.
+
+### Fixed
+
+- **"showing run for null."** With no runs, the client sent the literal string `"null"` as a
+  date and the server echoed it back as though it had been looked up. `_resolve_date` now
+  returns a run that exists or nothing at all, and the client sends no date when it has
+  none. Small, but the same shape as every other defect here: an answer stated with more
+  confidence than the lookup behind it — and it was sitting one line above the panel written
+  to stop a fresh install looking broken.
+
+### Internal
+
+The install test now drives the whole first-run path on a genuinely fresh tree: setup
+reports incomplete and names all three steps, `/api/run` invents no date under three
+different queries, and the guard writer is exercised refusals-first — no header,
+cross-origin, empty list, placeholder names — before the real write, then checked for
+dedupe, casing, and that every other key in the file survived.
+
 ## 0.2.0 — a Microsoft Graph backend, for the mailboxes IMAP cannot reach
 
 ### Added — `provider: "graph"`
