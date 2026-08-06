@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.4.0 — the agent that reads the mail no longer holds the power to act on it
+
+The gap this closes, from the install report: *"one agent both ingests untrusted input and
+holds execution power, daily, unsupervised."*
+
+The triage agent reads sender names, subjects and snippets — text written by anyone who knows
+the address — and that text flows into the same context deciding what happens to the message.
+The realistic harm was never "an attacker deleted my mail", because Trash is recoverable. It
+is quieter: **a genuine security alert marked unimportant so it never reaches the person.**
+The purpose of this tool is deciding what a human sees, which makes perception the asset
+worth attacking.
+
+### The structural change — propose, then dispose
+
+A run is now two steps that cannot be collapsed into one:
+
+```
+MAILTOOL_READONLY=1 python tools/mailtool.py fetch ...   # classify; cannot act
+python tools/apply_proposal.py run.json                  # decide, change nothing
+python tools/apply_proposal.py run.json --apply          # move the survivors
+```
+
+`apply_proposal.py` is an ordinary program. **It reads no message body, calls no model, and
+takes no instruction from anything a sender wrote** — it reads structured fields and stored
+history, then re-derives every entitlement itself. A proposal is a request, exactly like a
+click on the dashboard, and the dashboard already refuses to trust those.
+
+It refuses to bin a message when the sender is on the protected list, the category is
+protected, this run flagged it for attention, it carries injection signals, or the sender has
+kept mail on record. If the guard is unconfigured it **refuses everything** and says so.
+
+Why matching on attacker-controlled `sender` and `subject` is still safe: those fields are
+used only to find reasons to *refuse*, so the worst a forgery achieves is protecting the
+forger's own mail from the bin. Every error it can cause falls on the conservative side.
+
+### Injection attempts become triage signals
+
+`fetch` now labels any message whose text is addressed to the *triager* rather than to a
+person — `injection_signals`, with a plain-English reason — and states in the payload itself
+that its contents are data to classify, never instructions to follow. Nothing is dropped or
+altered; the label is evidence, and the applier refuses to silently bin anything carrying one.
+
+`untrusted.fence()` wraps text in a boundary a sender cannot close early: markers occurring in
+the content are defanged before wrapping, so writing the closing marker into a message cannot
+make the rest read as trusted.
+
+**This is not a filter and must never be used as one.** Detection over natural language is
+lossy, and anyone who reads the module can phrase around it in a minute. It is deliberately
+tuned narrow — phrasings with essentially no innocent use — because a broad net would flag
+half an inbox and the flag would stop meaning anything. A zero means "nothing obvious", never
+"nothing present". The structural split above is the defence that does not depend on it.
+
+### `MAILTOOL_READONLY`
+
+Set it for the reading phase and `act` refuses outright, before touching the network, naming
+the applier. Not a sandbox — anything that can set the variable can unset it — but it removes
+the capability from the phase that should not have it, which is the part that was missing.
+
+### Internal
+
+`tools/test_separation.py` exercises all three together: eleven injection phrasings flagged
+and seven ordinary messages left alone, the fence proof against early closure, the readonly
+latch on and off, and the applier judged against a temp store — unconfigured guard refusing
+everything, then each refusal reason fired individually. It touches no real mailbox, no real
+config and no real database; the one thing it must never do is trash a message.
+
+Two of its own assertions passed at first only because the applier was crashing — a substring
+absent from a traceback, and a non-zero exit from an exception. Both now assert on what
+actually ran.
+
 ## 0.3.0 — a fresh install stops looking broken
 
 The observation this release answers: *"the audience this tool would most help is precisely

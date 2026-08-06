@@ -1,0 +1,201 @@
+"""Apply a run's trash proposal - as a program, not as an agent.
+
+THE GAP THIS CLOSES. The triage agent reads sender names, subjects and body snippets: text
+written by anyone who knows the address. That text flows into the same context that decides
+what happens to the message. If the same agent also holds the power to trash, then a crafted
+email is one step from influencing what gets hidden - and the realistic harm is not "an
+attacker deleted my mail", because Trash is recoverable. It is quieter: a genuine security
+alert marked unimportant so it never reaches the person. The whole purpose of this tool is
+deciding what a human sees, which makes PERCEPTION the asset worth attacking.
+
+So the run is split in two. The agent CLASSIFIES and writes a proposal. This program DISPOSES,
+and it re-derives every entitlement from the store and the protected list rather than
+believing the proposal. A proposal is a request, exactly like a click on the dashboard - and
+the dashboard already refuses to trust those.
+
+WHAT THIS PROGRAM NEVER DOES: read a message body, call a model, or take an instruction from
+anything a sender wrote. It reads structured fields and stored history. That is the property
+that matters, and it is a property of the architecture rather than of anyone's vigilance.
+
+WHY THE ATTACKER-CONTROLLED FIELDS ARE STILL SAFE TO MATCH ON. `sender` and `subject` in the
+proposal come from the mail, so a sender controls them. They are used only to look for
+reasons to REFUSE - so the worst an attacker achieves by forging them is that their own mail
+is protected from the bin. Every error the forgery can cause falls on the conservative side.
+
+    python tools/apply_proposal.py run.json                 # dry run: decide, change nothing
+    python tools/apply_proposal.py run.json --apply         # actually move to Trash
+    python tools/apply_proposal.py run.json --apply --account one@example.com
+
+Exit codes: 0 applied cleanly, 1 refused something (read the report), 2 refused everything
+because the guard is not configured.
+"""
+import argparse
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT / "dashboard"))
+from server import (_sender_key, load_protected, protected_hit)          # noqa: E402
+
+DB = ROOT / "dashboard" / "email_dashboard.db"
+MAILTOOL = HERE / "mailtool.py"
+
+# Anything ever flagged this way is something the owner was meant to look at. A later run
+# proposing to bin the same sender is exactly the case worth stopping.
+ATTENTION = ("action-needed", "family", "security", "financial")
+
+
+def _history(conn):
+    """What the store already knows about each sender key: kept, attention-flagged, concepts.
+
+    Read once. This is the memory the proposal cannot overwrite, and the reason a sender that
+    mattered last month cannot be quietly binned this month.
+    """
+    hist = {}
+    try:
+        rows = conn.execute(
+            "SELECT sender, disposition, COALESCE(concept,'') concept, "
+            "COALESCE(importance,'') importance FROM messages "
+            "WHERE sender IS NOT NULL AND sender != ''")
+    except sqlite3.Error:
+        return hist
+    for sender, disposition, concept, importance in rows:
+        key = _sender_key(sender)
+        if not key:
+            continue
+        h = hist.setdefault(key, {"kept": 0, "trashed": 0, "attention": False,
+                                  "concepts": set()})
+        if disposition == "trashed":
+            h["trashed"] += 1
+        else:
+            h["kept"] += 1
+        if importance in ATTENTION:
+            h["attention"] = True
+        if concept:
+            h["concepts"].add(concept)
+    return hist
+
+
+def judge(msg, prot, hist):
+    """Every reason this message must NOT be trashed. Empty list means it may be.
+
+    Reasons are accumulated rather than short-circuited: a report that names one objection
+    when three apply invites someone to fix the one and retry.
+    """
+    reasons = []
+    sender = msg.get("sender") or msg.get("from") or ""
+    key = _sender_key(sender) or ""
+    concept = msg.get("concept") or ""
+    importance = msg.get("importance") or ""
+
+    if protected_hit(prot, sender) or (key and protected_hit(prot, key)):
+        reasons.append("sender is on your protected list")
+    if concept and concept in prot["concepts"]:
+        reasons.append(f"protected category: {concept}")
+    if importance in ATTENTION:
+        reasons.append(f"this run flagged it as {importance}")
+    if msg.get("injection_signals"):
+        # Mail that tried to steer the triager does not get quietly binned by that same
+        # triager's decision. Surface it to a person instead.
+        reasons.append("carries injection signals - needs a human look, not a silent bin")
+
+    h = hist.get(key)
+    if h:
+        if h["kept"]:
+            reasons.append(f"this sender has {h['kept']} kept or surfaced message(s) on "
+                           f"record - not pure noise")
+        if h["attention"]:
+            reasons.append("this sender has been flagged as needing attention before")
+        hit = h["concepts"] & prot["concepts"]
+        if hit:
+            reasons.append("sender has history in a protected category: "
+                           + ", ".join(sorted(hit)))
+    return reasons
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("proposal", help="run JSON written by the triage step")
+    ap.add_argument("--apply", action="store_true",
+                    help="actually move the survivors to Trash (default: decide only)")
+    ap.add_argument("--account", help="limit to one mailbox")
+    args = ap.parse_args()
+
+    with open(args.proposal, encoding="utf-8-sig") as f:
+        run = json.load(f)
+    messages = [m for m in (run.get("messages") or [])
+                if (m.get("disposition") or "") == "trashed"
+                and (not args.account
+                     or (m.get("account") or "").lower() == args.account.lower())]
+
+    prot = load_protected()
+    print(f"proposal      : {args.proposal}")
+    print(f"proposed trash: {len(messages)} message(s)"
+          + (f" in {args.account}" if args.account else ""))
+
+    if not prot["configured"]:
+        # FAIL CLOSED, and loudly. Without the guard there is nothing to check a proposal
+        # against, and "no list" must never be read as "nobody is protected".
+        print("\nREFUSING EVERYTHING: the protected-sender guard is not configured.")
+        print(f"  {prot['why']}")
+        print("  Nothing was applied. Fill the list in (the dashboard can do it) and re-run.")
+        return 2
+
+    conn = sqlite3.connect(DB) if DB.exists() else sqlite3.connect(":memory:")
+    hist = _history(conn)
+    print(f"guard         : {len(prot['names'])} protected name(s), "
+          f"{len(prot['concepts'])} protected category(ies)")
+    print(f"history       : {len(hist)} sender(s) with recorded messages\n")
+
+    allowed, refused = [], []
+    for m in messages:
+        why = judge(m, prot, hist)
+        (refused if why else allowed).append((m, why))
+
+    if refused:
+        print(f"REFUSED {len(refused)} of {len(messages)}:")
+        for m, why in refused:
+            print(f"  - {(m.get('sender') or '?')[:44]}")
+            print(f"    {(m.get('subject') or '')[:66]}")
+            for r in why:
+                print(f"      * {r}")
+        print()
+
+    print(f"CLEARED {len(allowed)} of {len(messages)} to trash.")
+    if not args.apply:
+        print("\n(dry run - nothing moved. Re-run with --apply to act on the cleared set.)")
+        return 1 if refused else 0
+
+    # Group by account: mailtool takes UIDs per mailbox, and a UID means nothing without one.
+    by_account = {}
+    for m, _ in allowed:
+        uid = str(m.get("uid") or "").strip()
+        acct = m.get("account")
+        if uid and acct:
+            by_account.setdefault(acct, []).append(uid)
+    moved = 0
+    for acct, uids in by_account.items():
+        r = subprocess.run(
+            [sys.executable, str(MAILTOOL), "act", "--account", acct,
+             "--uids", ",".join(uids), "--action", "trash"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode == 0:
+            moved += len(uids)
+            print(f"  {acct}: moved {len(uids)} to Trash")
+        else:
+            print(f"  {acct}: FAILED - {(r.stderr or r.stdout)[-300:]}")
+    skipped = len(allowed) - sum(len(v) for v in by_account.values())
+    if skipped:
+        print(f"  ({skipped} cleared message(s) had no uid/account and were left alone)")
+    print(f"\napplied {moved} of {len(messages)} proposed.")
+    return 1 if refused else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

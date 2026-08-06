@@ -24,6 +24,7 @@ import email.header
 import email.utils
 import imaplib
 import json
+import os
 import re
 import socket
 import sys
@@ -41,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # the first person to reach for secrets.token_urlsafe in this tree would have got a module
 # that does not have it.
 import credstore as secret_store
+import untrusted
 
 ROOT = Path(__file__).resolve().parent.parent
 # utf-8-sig, not utf-8: these are hand-edited files on Windows, where editors still add
@@ -402,11 +404,21 @@ def cmd_fetch(args):
                     if h and "." in h:
                         hosts.add(h)
             entry["link_hosts"] = sorted(hosts)
+        # Label mail that is addressed to the TRIAGER rather than to a person. Not a
+        # filter: the message is kept exactly as it is, and the label is evidence for
+        # the triage step. Legitimate senders do not write "ignore previous instructions".
+        untrusted.annotate(entry)
         messages.append(entry)
     conn.logout()
+    flagged = [m for m in messages if m.get("injection_signals")]
     print(json.dumps({"account": args.account, "mailbox": args.mailbox,
                       "total_matched": total_matched, "returned": len(uids),
-                      "offset_from_newest": args.offset, "messages": messages},
+                      "offset_from_newest": args.offset,
+                      # Stated in the payload itself, so it travels with the data into
+                      # whatever reads it rather than living only in a skill file.
+                      "_UNTRUSTED": untrusted.NOTICE,
+                      "injection_flagged": len(flagged),
+                      "messages": messages},
                      indent=2, ensure_ascii=False))
     return 0
 
@@ -463,6 +475,22 @@ def cmd_send(args):
 
 
 def cmd_act(args):
+    # THE READING PHASE MUST NOT HOLD HANDS. Set MAILTOOL_READONLY=1 for any process that
+    # ingests mail text, and this refuses outright. The agent that reads attacker-written
+    # sender names and subjects is the one that must not also be able to move mail; the
+    # split lives in apply_proposal.py, and this is the latch that makes bypassing it an
+    # explicit act rather than an available shortcut.
+    #
+    # Not a security boundary on its own - anything that can set the variable can unset it -
+    # but it removes the capability from the phase that should not have it, which is the
+    # part that was actually missing.
+    if os.environ.get("MAILTOOL_READONLY", "").strip() not in ("", "0", "false", "False"):
+        raise SystemExit(
+            "REFUSED: MAILTOOL_READONLY is set, so this process may not move, delete or flag "
+            "mail.\n"
+            "  The triage step classifies and writes a proposal; tools/apply_proposal.py "
+            "applies it\n"
+            "  after re-deriving every entitlement from the store and the protected list.")
     conn, _ = connect(args.account)
     conn.select(args.mailbox)
     uids = args.uids.split(",")
