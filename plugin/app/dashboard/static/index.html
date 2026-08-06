@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Email Routine Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="title">
+      <h1>📬 Email Routine Dashboard</h1>
+      <span class="sub" id="subtitle">loading…</span>
+    </div>
+    <div class="run-picker">
+      <label for="runSelect">Run</label>
+      <select id="runSelect"></select>
+    </div>
+  </header>
+
+  <!-- WORKFLOW ACTIONS. The one category where a missed link costs something that cannot
+       be recovered - a questionnaire due before a visit, a video appointment whose join
+       link arrives half an hour beforehand. Sits above everything else and hides itself
+       entirely when there is nothing outstanding, so its presence always means something.
+       WHICH senders carry a workflow is configuration; this panel names no organisation. -->
+  <section class="panel workflow" id="wfPanel" hidden>
+    <h2 class="wf-head">
+      <span>⚕ Needs you to do something <span class="muted" id="wfCount"></span></span>
+      <button class="linkbtn" id="wfShowDone" type="button">show handled</button>
+    </h2>
+    <div id="wfList"></div>
+  </section>
+
+  <section class="kpis" id="kpis"></section>
+
+  <!-- THE WHOLE RECORD AS ONE GRID. The run history used to be a dropdown of dates, which
+       is the least evocative possible rendering of everything this lane has done. Quiet
+       stretches, spikes and escalating weeks are visible here and in no table. -->
+  <section class="panel heat" id="heatPanel">
+    <h2 class="heat-head">
+      <span>The record <span class="muted" id="heatSummary"></span></span>
+      <span class="heat-legend" id="heatLegend"></span>
+    </h2>
+    <div class="heat-wrap"><div id="heatmap"></div></div>
+  </section>
+
+  <section class="panel" id="accountPanel">
+    <h2 class="acct-head">
+      <span>Account status <span class="muted" id="acctSummary"></span></span>
+      <button id="acctToggle" class="linkbtn" type="button">show details</button>
+    </h2>
+    <!-- Collapsed by default. The daily question is "did anything fail?", which the strip
+         answers in one glance; the full chips cost 170px of vertical space that the working
+         panels below need more (measured: they pushed the pager off a 720px viewport). -->
+    <div class="account-strip" id="accountStrip"></div>
+    <div class="account-grid" id="accounts" hidden></div>
+  </section>
+
+  <div class="split">
+    <section class="panel left scroll-panel">
+      <div class="panel-head sticky">
+        <div class="panel-tabs" id="panelTabs">
+          <button class="ptab active" data-view="trash">🗑️ Trash stats</button>
+          <button class="ptab" data-view="kept">📥 Kept stats</button>
+          <button class="ptab" data-view="senders">📮 Top senders</button>
+          <button class="ptab" data-view="steam">🎮 Steam sales</button>
+          <button class="ptab" data-view="quiet">🔕 Gone quiet <span class="tabbadge" id="quietBadge" hidden></span></button>
+          <button class="ptab" data-view="repeats">🔁 Repeats <span class="tabbadge" id="repeatBadge" hidden></span></button>
+        </div>
+        <div class="scope" id="trashScope">
+          <span class="muted" id="trashScopeLabel">(all time)</span>
+          <label><input type="radio" name="scope" value="all" checked> All</label>
+          <label><input type="radio" name="scope" value="run"> Run</label>
+        </div>
+        <div class="scope" id="steamScope" hidden>
+          <span class="muted" id="steamMeta"></span>
+          <button id="steamRefresh" class="btn" title="Pull live prices from Steam and drop ended sales">↻ Refresh prices</button>
+        </div>
+      </div>
+
+      <div class="trash-wrap" id="trashView">
+        <!-- Category rail: its own scroller so a long tail of labels can never push
+             the results off screen. Before this, 34 categories stacked to 1729px inside
+             a 239px panel and the result table rendered 1672px below the fold. -->
+        <aside class="trash-rail">
+          <div class="rail-head">
+            <span class="rail-title" id="railTitle">Concepts</span>
+            <button id="catToggle" class="linkbtn" type="button" hidden></button>
+          </div>
+          <!-- GROUPING. The raw labels drifted to 62 names for about 12 real concepts, so a
+               rail of raw labels splits one question across a dozen rows: twelve different
+               labels have meant "money", and the biggest single one reaches only a third of
+               them. "Concepts" rolls them onto the canonical list; "Raw labels" keeps the
+               exact word each run wrote, because the raw history is evidence and is not
+               thrown away. -->
+          <div class="scoperow" id="groupScope">
+            <button class="chip" type="button" data-group="concept">Concepts</button>
+            <button class="chip" type="button" data-group="category">Raw labels</button>
+          </div>
+          <div class="trash-cats" id="trashCats"></div>
+        </aside>
+
+        <div class="trash-detail" id="trashDetail">
+          <div class="detail-head">
+            <div class="searchrow">
+              <input id="trashSearch" type="search" autocomplete="off" spellcheck="false"
+                     placeholder="Search - sender, subject, why, account">
+              <button id="trashClear" class="linkbtn" type="button" hidden>clear</button>
+            </div>
+            <!-- SEARCH SCOPE. The search used to be silently locked to trashed mail while
+                 calling itself a search: 37% of triaged messages - every kept and surfaced
+                 one, including all the family and banking records - could not be found at
+                 all, and asking for them returned a confident zero. The scope is now stated
+                 on screen and switchable. -->
+            <div class="scoperow" id="dispScope">
+              <span class="muted">Search in:</span>
+              <button class="chip" type="button" data-disp="trashed">Trashed only</button>
+              <button class="chip" type="button" data-disp="all">Everything I triaged</button>
+            </div>
+            <h3 id="drillTitle">Pick a category, or search - results appear here</h3>
+          </div>
+          <div class="detail-body" id="drillScroll">
+            <div id="drill"></div>
+          </div>
+          <div class="pager" id="trashPager" hidden>
+            <button id="pagePrev" class="btn" type="button">&larr; Prev</button>
+            <span class="muted" id="pageLabel"></span>
+            <button id="pageNext" class="btn" type="button">Next &rarr;</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="sendersView" hidden>
+        <div id="sendersList"></div>
+      </div>
+
+      <div id="steamView" hidden>
+        <div id="steamList"></div>
+      </div>
+
+      <!-- THE ONLY VIEW THAT ALARMS BY SEEING NOTHING. Every other panel is driven by
+           mail that arrived, so "a biller stopped writing" is structurally invisible to
+           them. The reach line is not decoration: this panel's whole claim is about
+           ABSENCE, and an absence claim is worth exactly its stated observation window. -->
+      <div id="quietView" hidden>
+        <div class="quiet-reach muted" id="quietReach"></div>
+        <div id="quietList"></div>
+      </div>
+
+      <!-- THE SAME THING, ARRIVING AGAIN. One issue across three runs used to render as
+           three unrelated low-priority rows - that is the drowning mechanism. -->
+      <div id="repeatsView" hidden>
+        <div class="quiet-reach muted" id="repeatReach"></div>
+        <div id="repeatList"></div>
+      </div>
+    </section>
+
+    <section class="panel right scroll-panel">
+      <h2 class="sticky">Summary — what I'm reporting <span class="muted" id="summaryDate"></span></h2>
+      <div id="summary"></div>
+    </section>
+  </div>
+
+  <div id="acctModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="amTitle">
+      <div class="modal-head">
+        <div class="mv-titles">
+          <h3 id="amTitle"></h3>
+          <div class="mv-meta" id="amMeta"></div>
+        </div>
+        <button id="amClose" class="btn" type="button">Close</button>
+      </div>
+      <div class="modal-body" id="amBody"></div>
+    </div>
+  </div>
+
+  <!-- MESSAGE VIEWER. The iframe carries an EMPTY sandbox attribute on purpose: that is
+       the most restrictive setting there is - no scripts, no forms, no same-origin, no
+       top-level navigation, no popups. allow-scripts must never be added here, and
+       allow-scripts together with allow-same-origin would let a message remove its own
+       sandbox. The srcdoc content is already sanitised server-side and carries its own
+       CSP; this is the third independent barrier, not the first. -->
+  <div id="msgModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="mvSubject">
+      <div class="modal-head">
+        <div class="mv-titles">
+          <h3 id="mvSubject">(no subject)</h3>
+          <div class="mv-meta" id="mvMeta"></div>
+        </div>
+        <button id="mvClose" class="btn" type="button" aria-label="Close">Close</button>
+      </div>
+      <div class="mv-safety" id="mvSafety"></div>
+      <div class="mv-modes">
+        <button class="chip on" id="mvModeText" type="button">Plain text (safe)</button>
+        <button class="chip" id="mvModeHtml" type="button">Formatted - images stay blocked</button>
+        <span class="mv-themes" id="mvThemes" hidden>
+          <span class="muted">view:</span>
+          <button class="chip on" id="mvThemeReader" type="button"
+                  title="Layout discarded, content re-rendered for reading">Reader</button>
+          <button class="chip" id="mvThemeDark" type="button"
+                  title="The sender's own layout, in dark colours">Their layout</button>
+          <button class="chip" id="mvThemeLight" type="button"
+                  title="Exactly as the sender designed it">As sent</button>
+        </span>
+      </div>
+      <div class="modal-body">
+        <pre id="mvText" class="mv-text"></pre>
+        <iframe id="mvFrame" class="mv-frame" sandbox referrerpolicy="no-referrer" hidden></iframe>
+      </div>
+      <div class="mv-ack" id="mvAck">
+        <button class="btn ackbtn" id="mvAckBtn" type="button">Acknowledge</button>
+        <button class="linkbtn" id="mvAckThread" type="button"
+                title="Silence every future notice of this same thing">and everything like it</button>
+        <span class="muted" id="mvAckState"></span>
+      </div>
+      <div class="mv-foot muted" id="mvFoot"></div>
+    </div>
+  </div>
+
+  <footer>
+    <span id="footer"></span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

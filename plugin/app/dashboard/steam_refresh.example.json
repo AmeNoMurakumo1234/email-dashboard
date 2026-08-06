@@ -1,0 +1,4 @@
+{
+  "_comment": "Template for the Steam store cookie. Committed with PLACEHOLDERS only - every date-shaped field below is a stand-in, not anyone's real date of birth. This cookie is NOT a login/session/auth token: it is Steam's public age-gate cookie (a birthtime epoch plus a mature-content opt-in) that clears the store's mature-content interstitial so the 'Offer ends ...' countdown renders. To enable sale-end scraping for age-gated titles, copy this to steam_refresh.local.json (gitignored) and replace BOTH placeholders with any adult date - birthtime as seconds-since-1970, lastagecheckage as D-Month-YYYY. They only have to agree with each other and clear 18; nothing checks them against you, and nothing about you is sent. Leaving the placeholders is safe: age-gated titles simply get no scraped end date, which the code already tolerates.",
+  "store_cookie": "birthtime=AGE_GATE_EPOCH_SECONDS; mature_content=1; wants_mature_content=1; lastagecheckage=AGE_GATE_DATE"
+}

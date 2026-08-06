@@ -1,0 +1,25 @@
+{
+  "_comment": "Template triage rules. Committed to the repo with GENERIC placeholders only — no real sender names. Copy this to categorize.local.json (gitignored) and edit it for your deployment; the local file wins when present. First matching needle wins, in array order.",
+  "rules": [
+    {"category": "otp",                 "needles": ["otp", "one-time", "verification code", "login code", "2fa", "passcode"]},
+    {"category": "shipping",            "needles": ["shipping", "tracking number", "out for delivery", "your order has shipped", "delivery update"]},
+    {"category": "job-alert",           "needles": ["job alert", "job-alert", "new jobs", "jobs for you", "jobalerts"]},
+    {"category": "social-notification", "needles": ["notification", "people you may know", "profile view", "invitation", "digest", "engagement", "mentioned you", "tagged you", "new follower", "memories"]},
+    {"category": "newsletter",          "needles": ["newsletter", "weekly digest", "roundup", "announcement", "what's new"]},
+    {"category": "confirmed-junk",      "needles": ["confirmed-junk", "confirmed junk", "no longer interested", "known junk sender"]},
+    {"category": "security-noise",      "needles": ["security alert", "new sign-in", "app password", "2-step", "sign-in generated", "unusual activity"]},
+    {"category": "promo",               "needles": ["promo", "promotional", "marketing", "sale", "deal", "coupon", "offer", "% off", "limited time", "blast", "loyalty"]}
+  ],
+  "labels": {
+    "otp": "OTP / codes",
+    "shipping": "Shipping / delivery",
+    "job-alert": "Job alerts",
+    "social-notification": "Social / notifications",
+    "newsletter": "Newsletters",
+    "confirmed-junk": "Confirmed-junk senders",
+    "security-noise": "Security noise",
+    "promo": "Promos / marketing",
+    "appointment": "Appointments",
+    "other": "Other"
+  }
+}

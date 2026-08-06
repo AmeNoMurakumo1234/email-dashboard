@@ -1,0 +1,24 @@
+# Runtime data - NEVER commit any of this to a public repo.
+# The database is a rich record of who writes to you; the config holds credentials
+# pointers and the names of people who matter. Both are local, and both stay local.
+*.db
+*.db-wal
+*.db-shm
+*.local.json
+config/accounts.json
+plugin/app/rules-and-policies.md
+plugin/app/dashboard/runs/
+plugin/app/summaries/
+plugin/app/run-reports/
+plugin/app/bills/
+plugin/app/receipts/
+plugin/app/secrets/
+*.eml
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- added by build_plugin.py: required patterns that were missing ---
+accounts*.json

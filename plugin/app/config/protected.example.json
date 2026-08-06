@@ -1,0 +1,57 @@
+{
+  "_README": [
+    "WHO AND WHAT MUST NEVER BE AUTO-TRASHED. Copy this file to protected.local.json and",
+    "fill it in for yourself - the .local.json is gitignored and never leaves your machine.",
+    "",
+    "This is the guard behind the 'Always trash this sender' button and any future rule the",
+    "dashboard can write. It used to be a regex hard-coded in server.py, which meant one",
+    "person's relatives were compiled into the program - wrong for them if it ever shipped,",
+    "and wrong in principle: WHO MATTERS TO YOU is configuration, not code.",
+    "",
+    "IT FAILS CLOSED. If protected.local.json is missing or unreadable, the dashboard",
+    "refuses to write ANY auto-trash rule at all. An absent guard must never read as",
+    "'nothing is protected' - that is the failure direction that silences family mail."
+  ],
+
+  "protected_names": [
+    "_Names, surnames or sender strings that must never be locked to auto-trash._",
+    "_Matched case-insensitively as substrings, so a first name covers its variants._",
+    "_Put your family here, anyone whose mail you must never miss, your employer,_",
+    "_your banks, your doctor, your government correspondents._",
+    "a-family-member",
+    "another-family-member",
+    "your-bank",
+    "your-employer",
+    "your-doctor"
+  ],
+
+  "protected_concepts": [
+    "money (bills, receipts, banking)",
+    "family & people",
+    "account & security",
+    "medical"
+  ],
+
+  "_workflow_senders": [
+    "Senders whose mail carries something you must DO, with a link, on a deadline.",
+    "They get their own panel above everything else and can push your phone.",
+    "The key is the exact From address; the value is [short-kind, human label].",
+    "The example below is a clinic; a school portal, a payroll system or a benefits",
+    "office works the same way. Replace it with whatever applies to you, or leave it",
+    "empty - an empty list simply means the panel never appears."
+  ],
+  "workflow_senders": {
+    "noreply@your-clinic.example": ["screening", "Prescreening questionnaire"],
+    "appointments@your-clinic.example": ["appointment", "Video appointment"]
+  },
+
+  "_workflow_link_domain": [
+    "Links in workflow mail are only made CLICKABLE when the sender is verified (DKIM",
+    "passes for this domain) AND the link's own host is under it. Both must hold.",
+    "Leave empty to never linkify anything."
+  ],
+  "workflow_link_domain": "your-clinic.example",
+
+  "_rule_min_messages": "How many messages before a sender may be locked to auto-trash.",
+  "rule_min_messages": 8
+}

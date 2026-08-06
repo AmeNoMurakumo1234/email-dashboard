@@ -1,0 +1,32 @@
+{
+  "_README": [
+    "TEMPLATE for local label extensions. Copy to concepts.local.json and edit.",
+    "The .local.json is gitignored and never leaves your machine.",
+    "",
+    "concepts.py ships GENERIC defaults - the labels a mailbox actually accumulates are",
+    "personal, and belong here rather than compiled into the program. Add a label under",
+    "the concept it means, so a query for that concept reaches ALL of it. That is the",
+    "whole point: labels drift until many of them stand for one concept, and a query on",
+    "the obvious label then answers with a fraction of the truth, stated as the whole.",
+    "",
+    "Extend-only by design. You may add labels to a shipped concept, and you may name a",
+    "new concept. You cannot remove a shipped one - so a typo here degrades to an",
+    "UNMAPPED label, which is visible, rather than silently unmapping labels that used",
+    "to resolve. An absent file is the normal case, not an error.",
+    "",
+    "Shipped concepts you can extend: social / platform notifications, marketing / promo,",
+    "money (bills, receipts, banking), account & security, newsletters, medical,",
+    "family & people, open questions / candidates, steam, mail logistics, calendar, other."
+  ],
+
+  "concepts": {
+    "social / platform notifications": ["_your-platform-label", "_another-one"],
+    "money (bills, receipts, banking)": ["_your-bank-statement-label"]
+  },
+
+  "_concept_keys": [
+    "Optional. Short URL-safe keys for any NEW concept you named above, so the UI never",
+    "has to pass a long concept name through a query string."
+  ],
+  "concept_keys": {}
+}

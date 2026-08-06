@@ -1,0 +1,570 @@
+:root {
+  --bg: #0f1419;
+  --panel: #1a212b;
+  --panel-2: #222c38;
+  --border: #2c3744;
+  --text: #e6edf3;
+  --muted: #8b98a5;
+  --accent: #4aa8ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --amber: #d29922;
+  --purple: #bc8cff;
+}
+* { box-sizing: border-box; }
+/* Ensure the `hidden` attribute always wins, even over class rules like
+   .trash-wrap { display:block } (otherwise the panel-toggle can't hide a view). */
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.45;
+  /* Fill the viewport so on a tall screen only the bottom panels scroll. On a short one the
+     page itself scrolls rather than crushing the working area to an unusable sliver -
+     min-height + auto instead of height + hidden. */
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 28px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #18202b, #131922);
+  position: sticky; top: 0; z-index: 10;
+}
+h1 { font-size: 20px; margin: 0; }
+.sub { color: var(--muted); font-size: 13px; }
+.run-picker label { color: var(--muted); font-size: 13px; margin-right: 8px; }
+select {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; font-size: 14px;
+}
+.muted { color: var(--muted); font-weight: normal; font-size: 13px; }
+
+.kpis {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  padding: 10px 28px 2px;
+}
+/* keep the top region at natural height; only .split grows/scrolls */
+header, .kpis { flex-shrink: 0; }
+body > .panel { flex-shrink: 0; margin: 10px 28px 0; padding: 10px 18px; }
+.kpi {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 16px;
+}
+.kpi .n { font-size: 26px; font-weight: 700; line-height: 1.15; }
+.kpi .l { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+.kpi.trash .n { color: var(--red); }
+.kpi.kept .n { color: var(--green); }
+.kpi.otp .n { color: var(--amber); }
+
+.panel {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  margin: 20px 28px; padding: 18px 22px;
+}
+.panel h2 { font-size: 16px; margin: 0 0 14px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; }
+.scope { font-size: 13px; color: var(--muted); }
+.scope label { margin-left: 14px; cursor: pointer; }
+
+.acct-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  margin: 0 0 7px; font-size: 14px;
+}
+/* Collapsed account view: one line, one glance. Dot + short handle + trashed count. */
+.account-strip { display: flex; flex-wrap: wrap; gap: 6px; }
+.acct-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 9px; font-size: 11px; white-space: nowrap;
+}
+.acct-pill.fail { border-color: var(--red); }
+.acct-pill .pn { font-weight: 600; }
+.acct-pill .pc { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* 8 compact chips across one row (wraps only on narrow screens, see media query) */
+.account-grid {
+  display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px;
+  margin-top: 10px;
+}
+.account {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px;
+  min-width: 0;
+}
+.account .addr { font-size: 11px; font-weight: 600; word-break: break-all; line-height: 1.25; }
+.account .role { font-size: 9px; color: var(--purple); text-transform: uppercase; letter-spacing: .04em; }
+.account .meta { color: var(--muted); font-size: 10.5px; margin-top: 3px; display: flex; gap: 8px; flex-wrap: wrap; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.dot.ok { background: var(--green); }
+.dot.fail { background: var(--red); }
+.dot.idle { background: var(--muted); }
+.account .counts b { color: var(--text); }
+
+.group { margin-bottom: 16px; }
+.group h3 {
+  font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .05em;
+  display: flex; align-items: center; gap: 8px;
+}
+.badge { font-size: 11px; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 20px; padding: 1px 9px; color: var(--muted); }
+.msg {
+  border-left: 3px solid var(--border); background: var(--panel-2);
+  border-radius: 0 7px 7px 0; padding: 9px 13px; margin-bottom: 7px;
+}
+.msg.action-needed { border-left-color: var(--red); }
+.msg.family { border-left-color: var(--purple); }
+.msg.financial { border-left-color: var(--green); }
+.msg.security { border-left-color: var(--amber); }
+.msg.info { border-left-color: var(--accent); }
+.msg .subj { font-weight: 600; font-size: 14px; }
+.msg .from { color: var(--muted); font-size: 12px; }
+.msg .reason { font-size: 13px; margin-top: 4px; }
+.msg .acct { font-size: 11px; color: var(--muted); }
+
+/* Two-column split: trash (left 30%) + summary (right 70%), each its own scrollbar */
+.split {
+  display: flex; gap: 20px; align-items: stretch;
+  margin: 10px 28px 12px;
+  flex: 1 1 0;        /* fill the remaining viewport height */
+  min-height: 0;      /* allow children to shrink so they scroll internally */
+  /* FLOOR THE WORKING AREA. The header, KPI row and account grid are fixed-height and ate
+     the viewport: at 1280x720 this region was left with 241px, which is not a panel, it is
+     a slot. A min-height means the working area stays usable and the PAGE scrolls instead
+     (see body { overflow-y: auto }) - the content the user came for wins over the chrome.
+     Sized so the whole dashboard FITS a 720px viewport with no page scroll: a page that
+     scrolls by a few pixels moves every control under the cursor between the moment you
+     look at it and the moment you click it, which is a real miss-target for a human and
+     not only for automation. Measured at 1280x720: page scrollHeight == viewport. */
+  min-height: 408px;
+}
+.split .panel { margin: 0; display: flex; flex-direction: column; min-width: 0; }
+.split .panel.left { flex: 1 1 60%; }
+.split .panel.right { flex: 1 1 40%; }
+.scroll-panel { overflow-y: auto; }
+/* Keep scrolling, hide the scrollbar chrome (Firefox / IE / WebKit-Chromium) */
+.scroll-panel { scrollbar-width: none; -ms-overflow-style: none; }
+.scroll-panel::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.sticky {
+  position: sticky; top: 0; z-index: 2; margin: 0 0 14px;
+  background: var(--panel); padding-bottom: 8px;
+}
+
+/* THE TRASH VIEW IS A TWO-PANE, NOT A STACK (rebuilt from a measurement).
+   It used to stack categories on top of the results. Measured live at 1280x720: a drifted
+   label list made a 1729px column inside a 239px panel, so clicking a category rendered its
+   title 1672px BELOW the fold - the click looked like it did nothing at all. Now the rail and the
+   results are siblings with their OWN scrollers, so the result of a click always lands where
+   the eye already is, no matter how long the category list grows. */
+.trash-wrap { display: flex; gap: 16px; align-items: stretch; min-height: 0; flex: 1 1 auto; }
+.trash-rail {
+  flex: 0 0 232px; display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--border); padding-right: 12px;
+}
+.rail-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin-bottom: 6px; flex-shrink: 0;
+}
+.rail-title {
+  font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em;
+}
+.trash-cats { overflow-y: auto; min-height: 0; flex: 1 1 auto; padding-right: 4px; }
+.trash-detail { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; min-width: 0; }
+.detail-head { flex-shrink: 0; }
+.detail-body { overflow: auto; min-height: 0; flex: 1 1 auto; }
+
+.searchrow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+#trashSearch {
+  flex: 1 1 auto; min-width: 0;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 7px;
+  padding: 7px 11px; font-size: 13px; font-family: inherit;
+}
+#trashSearch:focus { outline: none; border-color: var(--accent); }
+#trashSearch::placeholder { color: var(--muted); }
+.linkbtn {
+  background: none; border: none; color: var(--accent); cursor: pointer;
+  font-size: 12px; padding: 2px 4px; font-family: inherit;
+}
+.linkbtn:hover { text-decoration: underline; }
+
+.pager {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  padding-top: 10px; margin-top: 8px; border-top: 1px solid var(--border); flex-shrink: 0;
+}
+.btn {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 12px; font-size: 12.5px; cursor: pointer;
+  font-family: inherit;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .4; cursor: default; }
+
+/* Top-senders view */
+.sender-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 10px 14px;
+  align-items: center; padding: 8px 10px; border-radius: 7px;
+  border: 1px solid transparent; cursor: pointer;
+}
+.sender-row:hover { background: var(--panel-2); border-color: var(--border); }
+.sender-row .sname { font-size: 13px; font-weight: 600; min-width: 0; word-break: break-word; }
+.sender-row .sn { font-weight: 700; font-variant-numeric: tabular-nums; }
+.sender-row .smeta { grid-column: 1 / -1; font-size: 11px; color: var(--muted); margin-top: -2px; }
+.sender-row .sbar { grid-column: 1 / -1; height: 5px; background: var(--red);
+  border-radius: 3px; opacity: .75; }
+
+.cat-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 7px;
+  cursor: pointer; border: 1px solid transparent;
+}
+.cat-row:hover { background: var(--panel-2); }
+.cat-row.active { background: var(--panel-2); border-color: var(--accent); }
+.cat-row .cn { font-size: 13px; flex: 1; }
+.cat-row .cv { font-weight: 700; }
+.bar { height: 6px; background: var(--accent); border-radius: 3px; margin-top: 4px; }
+.cat-block { margin-bottom: 4px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--border); vertical-align: top;
+  overflow-wrap: anywhere; word-break: break-word; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+td.date { white-space: nowrap; color: var(--muted); width: 80px; }
+td.acctcell { color: var(--muted); font-size: 12px; word-break: break-all; }
+/* column proportions: date | account | from | subject | why */
+#drill col.c-date { width: 80px; }
+#drill col.c-acct { width: 14%; }
+#drill col.c-from { width: 16%; }
+#drill col.c-subj { width: 30%; }
+#drill col.c-why  { width: 28%; }
+#drill col.c-disp { width: 82px; }
+
+/* Search-scope chips. The scope has to be readable at a glance, because the whole point
+   is that a search must never quietly answer over a subset. */
+.scoperow { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; }
+.scoperow .chip {
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 10px; font-size: 12px; font-family: inherit; cursor: pointer;
+}
+.scoperow .chip:hover { color: var(--text); }
+.scoperow .chip.on {
+  background: var(--accent, #3b82f6); color: #fff; border-color: transparent;
+}
+
+/* Per-row verdict badge, shown only in all-triaged scope. */
+.disp {
+  display: inline-block; border-radius: 999px; padding: 1px 7px;
+  font-size: 11px; border: 1px solid var(--border); color: var(--muted);
+  white-space: nowrap;
+}
+.disp.trashed  { color: #f87171; border-color: #f8717155; }
+.disp.surfaced { color: #fbbf24; border-color: #fbbf2455; }
+.disp.kept     { color: #4ade80; border-color: #4ade8055; }
+.empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
+
+/* ---- workflow actions: loudest thing on the page, absent when there is nothing ---- */
+.panel.workflow { border-color: #3b82f6; border-left: 3px solid #3b82f6; }
+.wf-head { display: flex; justify-content: space-between; align-items: baseline;
+           gap: 10px; margin: 0 0 10px; font-size: 15px; }
+.wf-row { border: 1px solid var(--border); border-radius: 9px; padding: 11px 13px;
+          margin-bottom: 9px; background: var(--panel-2); }
+.wf-row.today, .wf-row.soon { border-color: #f87171; background: #1c1416; }
+.wf-row.done { opacity: .55; }
+.wf-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+          font-size: 12px; margin-bottom: 5px; }
+.wf-ico { font-size: 15px; }
+.wf-kind { font-weight: 600; color: var(--text); }
+.wf-when { border-radius: 999px; padding: 1px 8px; border: 1px solid var(--border);
+           color: var(--muted); }
+.wf-when.today, .wf-when.soon { color: #fca5a5; border-color: #f8717155; font-weight: 700; }
+.wf-when.future { color: #93c5fd; border-color: #3b82f655; }
+.wf-auth { font-size: 11px; color: #4ade80; }
+.wf-auth.bad { color: #f87171; font-weight: 700; }
+.wf-auth.done { color: var(--muted); }
+.wf-subj { font-size: 13.5px; margin-bottom: 7px; }
+.wf-go { display: inline-block; background: #2563eb; color: #fff !important;
+         text-decoration: none; border-radius: 7px; padding: 7px 14px;
+         font-size: 13px; font-weight: 600; }
+.wf-go:hover { background: #1d4ed8; }
+.wf-url { font-size: 10.5px; color: var(--muted); word-break: break-all; margin-top: 4px; }
+.wf-blocked { font-size: 12px; color: #fbbf24; }
+.wf-ack { margin-top: 8px; font-size: 12px; }
+/* dated, real, and deliberately not shouting yet */
+.wf-upcoming { font-size: 12px; color: var(--muted); border-top: 1px dashed var(--border);
+               padding-top: 8px; margin-top: 2px; }
+
+/* ---- The record: every run day as one grid ---- */
+.heat { padding: 12px 14px; }
+.heat-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin: 0 0 9px; font-size: 14px;
+}
+.heat-wrap { overflow-x: auto; padding-bottom: 2px; }
+.heat-legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px;
+               color: var(--muted); font-weight: 400; }
+.heat-legend .lg { display: inline-flex; align-items: center; gap: 4px; }
+.heat-legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.heat-legend i.dot { border-radius: 50%; width: 7px; height: 7px; }
+.heat-legend i.dot.open { background: #fbbf24; }
+.heat-legend i.dot.done { background: #4ade80; }
+.heat-legend i.none { background: var(--border); width: 5px; height: 5px; border-radius: 1px; }
+.hm-mon { fill: var(--muted); font-size: 10px; }
+/* A day with no run: a small inset dot, NO border. Giving it a stroke made it look like
+   the attention marker at small sizes - opposite meanings, near-identical rendering. */
+rect.hm-none { fill: var(--border); }
+/* amber = still waiting for you; green = there was something and all of it is seen */
+circle.hm-act.open { fill: #fbbf24; }
+circle.hm-act.done { fill: #4ade80; }
+rect.hm-day:hover { stroke: #fff; stroke-width: 1.5; }
+.qcat.warn { color: #fbbf24; border-color: #fbbf2455; }
+
+/* ---- Message viewer modal ---- */
+.modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.66);
+  display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px;
+}
+.modal-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  width: min(940px, 100%); max-height: 88vh; display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.modal-head {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+}
+.mv-titles { flex: 1; min-width: 0; }
+.modal-head h3 { margin: 0 0 3px; font-size: 15px; word-break: break-word; }
+.mv-meta { font-size: 12px; color: var(--muted); word-break: break-word; }
+.mv-safety {
+  font-size: 12px; padding: 8px 16px; background: var(--panel-2);
+  border-bottom: 1px solid var(--border); color: var(--muted);
+}
+.mv-safety .ok { color: #4ade80; font-weight: 600; }
+.mv-safety .bad { color: #f87171; font-weight: 600; }
+.mv-hosts { margin-top: 3px; color: #fbbf24; word-break: break-all; }
+.mv-modes { display: flex; gap: 6px; padding: 9px 16px 0; align-items: center;
+            flex-wrap: wrap; }
+.mv-themes { display: inline-flex; gap: 6px; align-items: center; margin-left: auto;
+             font-size: 12px; }
+.modal-body { flex: 1; overflow: auto; padding: 12px 16px; min-height: 200px; }
+.mv-text {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font: 12.5px/1.6 ui-monospace, Consolas, monospace; color: var(--text);
+}
+/* Dark by default so there is no white flash before the srcdoc paints. This rule sits
+   AFTER the earlier .mv-frame block on purpose - the first version put the dark colour
+   before it and the old `background:#fff` quietly won, leaving a white sheet behind every
+   message. */
+.mv-frame { width: 100%; height: 58vh; border: 1px solid var(--border);
+            border-radius: 6px; background: #0f141a; }
+.mv-ack {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 16px; border-top: 1px solid var(--border); font-size: 12px;
+}
+.ackbtn { font-size: 12px; }
+.ackbtn.on, .linkbtn.on { color: #4ade80; border-color: #4ade8055; }
+/* Acknowledged items fold away rather than vanishing - seen is not the same as gone. */
+.acked-fold { margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 9px; }
+.acked-fold > summary { cursor: pointer; font-size: 12px; color: var(--muted);
+                        list-style: revert; padding: 2px 0; }
+.acked-fold > summary:hover { color: var(--text); }
+.acked-fold .msg.done { opacity: .62; }
+.acked-fold .msg.done:hover { opacity: 1; }
+
+/* ---- the sender rule verdict ---- */
+.rule-box { border-radius: 8px; padding: 10px 12px; margin: 0 0 14px;
+            font-size: 12.5px; line-height: 1.55; }
+.rule-box.go { background: #16211a; border: 1px solid #4ade8055; }
+.rule-box.on { background: #1c1a12; border: 1px solid #fbbf2455; }
+.rule-box.no { background: var(--panel-2); border: 1px solid var(--border);
+               color: var(--muted); }
+.rule-box .btn { display: block; margin-top: 9px; }
+.btn.primary { background: #16a34a; border-color: #16a34a; color: #fff; }
+.btn.primary:hover { background: #15803d; }
+
+/* ---- KPI drill-downs ---- */
+.kpi.clickable { cursor: pointer; transition: border-color .12s; }
+.kpi.clickable:hover { border-color: #4b7bd6; }
+.am-blurb { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; line-height: 1.55; }
+.am-context {
+  font-size: 12px; color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 10px; margin-bottom: 12px;
+}
+.kpi-msg {
+  border-left: 2px solid var(--border); padding: 5px 0 5px 10px; margin-bottom: 7px;
+}
+.kpi-msg.linked { cursor: pointer; }
+.kpi-msg.linked:hover { border-left-color: #4b7bd6; background: var(--panel-2); }
+.kpi-subj { font-size: 13px; }
+.kpi-from { font-size: 11.5px; color: var(--muted); }
+/* The reason is the most valuable and least visible field in the store - it is the whole
+   record of WHY a call was made, so a drill-down that omitted it would be a list of names. */
+.kpi-why { font-size: 11.5px; color: #93a3b5; margin-top: 3px; line-height: 1.5; }
+
+/* ---- account detail modal ---- */
+.acct-link { cursor: pointer; }
+.acct-link:hover { text-decoration: underline; }
+.am-kpis { margin: 0 0 14px; }
+.am-kpis .kpi { flex: 1 1 110px; }
+.am-sec { margin: 0 0 16px; }
+.am-sec h4 { margin: 0 0 7px; font-size: 13px; color: var(--text); font-weight: 600; }
+.am-sec h4 .muted { font-weight: 400; font-size: 11.5px; }
+.am-spark { background: var(--panel-2); border: 1px solid var(--border);
+            border-radius: 6px; padding: 5px 6px; }
+.am-bar { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 4px; }
+.am-lab { flex: 0 0 190px; color: var(--muted); }
+.am-track { flex: 1; background: var(--panel-2); border-radius: 3px; height: 9px; }
+.am-track i { display: block; height: 100%; background: #4b7bd6; border-radius: 3px; }
+.am-n { flex: 0 0 42px; text-align: right; }
+.am-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px;
+          padding: 3px 0; border-bottom: 1px solid var(--border); }
+.am-row.done { opacity: .55; }
+.am-att span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                           white-space: nowrap; }
+.am-err { color: #f87171; font-size: 12px; margin-top: 6px; }
+.chip.bad { color: #f87171; border-color: #f8717155; }
+.mv-foot { font-size: 11.5px; padding: 9px 16px; border-top: 1px solid var(--border); }
+tr.msgrow { cursor: default; }
+tr.msgrow.linked { cursor: pointer; }
+tr.msgrow.linked:hover { background: var(--panel-2); }
+
+/* ---- Gone-quiet panel: the only view that alarms by seeing nothing ---- */
+.quiet-reach {
+  font-size: 12px; line-height: 1.55; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 12px; margin-bottom: 12px;
+}
+.quiet-reach .warn { color: #fbbf24; }
+.quiet-row {
+  border: 1px solid var(--border); border-left: 3px solid #fbbf24;
+  border-radius: 8px; padding: 9px 12px; margin-bottom: 8px;
+  background: var(--panel-2); cursor: pointer;
+}
+.quiet-row:hover { border-color: #fbbf24; }
+.quiet-row.money { border-left-color: #f87171; }
+.qhead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.qname { font-weight: 600; font-size: 13.5px; }
+.qcat {
+  font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 999px; padding: 1px 7px;
+}
+.qratio { margin-left: auto; font-size: 12px; color: #fbbf24; font-weight: 600; }
+.qratio.hot { color: #f87171; }
+.qbody { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.qvar { font-size: 11px; margin-top: 4px; }
+.tabbadge {
+  display: inline-block; background: #fbbf24; color: #0b0f14;
+  border-radius: 999px; font-size: 10.5px; font-weight: 700;
+  padding: 0 5px; margin-left: 4px; vertical-align: middle;
+}
+
+/* Left-panel tab toggle (Trash stats | Steam sales) */
+.panel-tabs { display: flex; gap: 6px; }
+.ptab {
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+  border-radius: 7px; padding: 6px 11px; font-size: 13px; cursor: pointer;
+  font-family: inherit;
+}
+.ptab:hover { color: var(--text); }
+.ptab.active { color: var(--text); border-color: var(--accent); background: #1e2b3a; }
+.btn {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
+}
+.btn:hover { border-color: var(--accent); }
+.btn:disabled { opacity: .6; cursor: default; }
+
+/* Steam sales gallery */
+.steam-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px;
+}
+.steam-tile {
+  display: flex; flex-direction: column; text-decoration: none; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
+  overflow: hidden; transition: border-color .12s, transform .12s;
+}
+.steam-tile:hover { border-color: var(--accent); transform: translateY(-2px); }
+.steam-thumb {
+  position: relative; aspect-ratio: 460 / 215; background: var(--panel);
+  display: flex; align-items: center; justify-content: center;
+}
+.steam-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Fallback when the Steam header image is missing */
+.steam-thumb.noimg { background: linear-gradient(135deg, #1d2b3c, #2a2140); }
+.steam-thumb.noimg::after {
+  content: attr(data-title); color: var(--muted); font-size: 13px; font-weight: 600;
+  text-align: center; padding: 8px 12px; line-height: 1.3;
+}
+.steam-disc {
+  position: absolute; top: 6px; right: 6px;
+  color: #fff; font-weight: 700; font-size: 13px; white-space: nowrap;
+  background: var(--green); border-radius: 5px; padding: 1px 7px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.4);
+}
+.steam-hide {
+  position: absolute; top: 6px; left: 6px;
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; line-height: 1;
+  font-size: 13px; font-weight: 700; color: #fff; cursor: pointer;
+  background: var(--red); border: none; border-radius: 5px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.4);
+  opacity: .85; transition: opacity .12s, transform .12s;
+}
+.steam-hide:hover { opacity: 1; transform: scale(1.1); }
+.steam-body { padding: 9px 11px; display: flex; flex-direction: column; gap: 3px; }
+.steam-title {
+  font-weight: 600; font-size: 13.5px; line-height: 1.25;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.steam-tile:hover .steam-title { color: var(--accent); }
+.steam-price { font-size: 14px; }
+.steam-price .was { color: var(--muted); text-decoration: line-through; font-size: 12.5px; }
+.steam-price .now { color: var(--green); font-weight: 700; }
+.steam-span { font-size: 11px; }
+
+footer { padding: 6px 28px 10px; color: var(--muted); font-size: 11.5px; flex-shrink: 0; }
+/* Narrower screens: let chips wrap to fewer columns */
+@media (max-width: 1100px) {
+  .account-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 800px) {
+  body { height: auto; overflow: auto; }   /* stacked layout scrolls the page */
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .account-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* STACKED, AND SIZED BY CONTENT - not by leftover viewport space.
+     Two bugs lived here, both found by measuring at 375x812:
+     (1) min-height:0 cancelled the working-area floor and the panels collapsed to ~179px;
+     (2) keeping .split as `flex: 1 1 0` while giving its stacked children a 420px floor made
+         the children OVERFLOW the flex box - and because .split is overflow:visible they
+         painted straight over the footer. The search field and the whole results table were
+         physically covered by it. So below this width .split stops competing for viewport
+         height and simply grows to fit, and the page scrolls. */
+  .split { flex-direction: column; flex: 0 0 auto; min-height: 0; height: auto; }
+  .split .panel { min-height: 420px; flex: 0 0 auto; }
+  .scroll-panel { max-height: none; }
+
+  /* STACK THE TWO PANES, and give them REAL heights.
+     Measured at 375x812: the side-by-side layout collapsed the rail AND the results to zero
+     width and zero height - every control reported ZERO SIZE, i.e. present in the DOM and
+     invisible on screen. A fixed-basis flex child inside a column-flex panel with min-height:0
+     resolves to nothing when the row does not fit. The fix is to stop being a row at all
+     below this width, and to state heights rather than inherit them from a collapsed parent. */
+  .trash-wrap { flex-direction: column; gap: 12px; }
+  .trash-rail {
+    flex: 0 0 auto; border-right: none; border-bottom: 1px solid var(--border);
+    padding-right: 0; padding-bottom: 10px;
+  }
+  .trash-cats { max-height: 190px; flex: 0 0 auto; }
+  .trash-detail { flex: 1 1 auto; min-height: 320px; }
+  .detail-body { min-height: 240px; }
+  /* the results table has five columns; let it scroll sideways inside its own box rather
+     than pushing the page into horizontal overflow */
+  #drill table { table-layout: auto; min-width: 560px; }
+}
+
+/* Search-term highlight in the trash results table. */
+mark { background: rgba(74,168,255,.28); color: var(--text); border-radius: 3px; padding: 0 2px; }
