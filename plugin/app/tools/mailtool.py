@@ -45,10 +45,25 @@ import credstore as secret_store
 import untrusted
 
 ROOT = Path(__file__).resolve().parent.parent
-# utf-8-sig, not utf-8: these are hand-edited files on Windows, where editors still add
-# a BOM by default and json.load raises on one. The installer wrote a BOM here for a
-# while and made accounts.json unreadable on every fresh install.
-CONFIG = json.loads((ROOT / "config" / "accounts.json").read_text(encoding="utf-8-sig"))
+# Loaded LAZILY. This used to be read at import time, which made the module unimportable
+# without config - so the test suite could not run on a clean clone, and you had to install
+# before you could test. Deferred behind a function, a missing file now surfaces where it
+# means something (at the command that needs it) instead of at `import`.
+_CONFIG = None
+
+
+def config():
+    global _CONFIG
+    if _CONFIG is None:
+        try:
+            # utf-8-sig: hand-edited on Windows, where editors still add a BOM by default
+            # and json.load raises on one.
+            _CONFIG = json.loads(
+                (ROOT / "config" / "accounts.json").read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            _CONFIG = {"accounts": []}
+    return _CONFIG
+
 
 # WHICH MICROSOFT ACCOUNTS CAN SIGN IN. This was hard-coded to /consumers/, which accepts
 # personal accounts ONLY - outlook.com, hotmail, live. A work or school mailbox does not
@@ -62,7 +77,7 @@ CONFIG = json.loads((ROOT / "config" / "accounts.json").read_text(encoding="utf-
 #   organizations  work/school only
 #   consumers      personal only
 #   <tenant-guid>  one specific tenant
-MS_AUTHORITY = str(CONFIG.get("ms_authority") or "common").strip("/ ") or "common"
+MS_AUTHORITY = str(config().get("ms_authority") or "common").strip("/ ") or "common"
 MS_TOKEN_URL = "https://login.microsoftonline.com/%s/oauth2/v2.0/token" % MS_AUTHORITY
 MS_DEVICECODE_URL = ("https://login.microsoftonline.com/%s/oauth2/v2.0/devicecode"
                      % MS_AUTHORITY)
@@ -73,7 +88,7 @@ def ms_client_id():
     """The Entra ID app registration this tool signs in through.
 
     Read through a function so a missing key names itself and says what to do. It used to be
-    CONFIG["ms_client_id"] inline, so the first thing every Microsoft user met was a bare
+    config()["ms_client_id"] inline, so the first thing every Microsoft user met was a bare
     KeyError with no indication that an app registration was needed at all - and the
     onboarding skill never mentioned the step either.
 
@@ -81,7 +96,7 @@ def ms_client_id():
     for the tenant, and everyone shares the id. It is not a secret - it identifies the app,
     not the person - which is why it lives in accounts.json rather than the credential store.
     """
-    cid = (CONFIG.get("ms_client_id") or "").strip()
+    cid = (config().get("ms_client_id") or "").strip()
     if not cid:
         raise SystemExit(
             "ERROR: no \"ms_client_id\" in config/accounts.json.\n"
@@ -104,7 +119,7 @@ socket.setdefaulttimeout(30)
 
 
 def account_config(addr):
-    for acct in CONFIG["accounts"]:
+    for acct in config()["accounts"]:
         if acct["email"].lower() == addr.lower():
             return acct
     raise SystemExit(f"ERROR: {addr} is not in config/accounts.json")
@@ -249,7 +264,7 @@ def find_trash(conn):
 # ---------------------------------------------------------------- commands
 
 def cmd_doctor(args):
-    targets = [a for a in CONFIG["accounts"] if not args.account or a["email"].lower() == args.account.lower()]
+    targets = [a for a in config()["accounts"] if not args.account or a["email"].lower() == args.account.lower()]
     results, ok_count = [], 0
     for acct in targets:
         addr = acct["email"]

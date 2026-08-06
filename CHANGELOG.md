@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.5.1 — the injection guard was not wired into the Graph backend
+
+### Fixed — a guard that could not fire, for a whole release
+
+`untrusted.annotate()` was wired into the IMAP backend and **not into the Graph one**. Both
+fetch attacker-written text; only one labelled it.
+
+The consequence compounded, and that is the real severity: `apply_proposal.py` refuses to bin
+anything carrying `injection_signals` — the right guard — but a Graph-fetched message never
+had the field, **so the guard silently never fired for Graph users.** It failed open, in
+exactly the case it was built for, with no error, no warning and no log line.
+
+Two things sharpened it. **Graph is the Microsoft 365 path**, so the deployments most likely
+to adopt this were the ones getting none of the injection protection, while the IMAP path —
+the one heading for retirement in business tenants — was the protected one. And the 0.5.0
+architecture made it invisible: `untrusted.py` and `apply_proposal.py` are coherent enough
+that a reader assumes coverage is universal, and every docstring says "the triage agent reads
+sender names, subjects and snippets" with no backend qualifier.
+
+Reproduced before fixing: a deliberately hostile message through the Graph fetch path carried
+**no** `injection_signals` and **no** `_UNTRUSTED` envelope, while the detector found five
+distinct signals in the same text.
+
+**The fix that matters more than the wiring** is `tools/test_backend_parity.py`. The bug class
+is "a second implementation of an interface misses a cross-cutting concern", and it will recur
+every time a backend is added. The suite drives one hostile fixture through **every** backend
+from a table and asserts identical labelling — adding a backend without adding it to that
+table is itself the failure. It also checks the negative half, because a parity test that only
+checked the hostile case would pass just as happily on a backend that stamped the label onto
+everything, which would be worse than useless. Mutation-tested: removing the call from either
+backend fails the suite.
+
+### Fixed — the test suite could not run on a clean clone
+
+`msgraph.py` read `accounts.json` at import, so the module was unimportable without config and
+the Graph suite crashed on a fresh checkout — you had to install before you could test, which
+is backwards. Both backends now load config lazily; a missing file surfaces at the command
+that needs it, where it means something, rather than at `import`. Verified on a tree with no
+config at all: 12 tests, exit 0.
+
+### Fixed — the installer could report success about someone else's dashboard
+
+`start-dashboard.ps1` is deliberately polite and no-ops when the port already serves an
+email-dashboard. So a *second* install on the same machine started nothing, got the **first**
+install's reply, and reported success — green, about the wrong copy, in exactly the case where
+someone is testing a new version and wants to know it came up.
+
+`/api/whoami` now reports the `root` of the install that is answering, and the installer
+checks it and warns plainly when a different install holds the port. The install test asserts
+it too.
+
 ## 0.5.0 — say which day you are looking at, and stop assuming what people play
 
 ### Fixed — you had to hunt the page to find which day was selected

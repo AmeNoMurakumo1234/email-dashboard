@@ -1622,9 +1622,21 @@ def api_steam_refresh(conn, q):
 
 
 def api_whoami(conn, q):
-    # Lets a launcher confirm THIS port is the email dashboard (not a worker's
-    # Location Editor that happens to be on it) before deciding to no-op.
-    return {"app": "email-dashboard", "name": "Email Routine Dashboard"}
+    """Which dashboard is answering, and from where.
+
+    The app name alone lets a launcher confirm the port is not somebody else's service. It
+    is NOT enough for an installer: `start-dashboard.ps1` is deliberately polite and no-ops
+    when the port already serves an email-dashboard, so a second install on the same machine
+    started nothing, found the FIRST install answering, and reported success. Green, and
+    about the wrong copy.
+
+    `root` is the absolute path of the install that is actually serving, so a caller can
+    check it got its own. Local-only by construction - this endpoint is unreachable off
+    127.0.0.1 - so it discloses a path to someone who already has the filesystem.
+    """
+    return {"app": "email-dashboard", "name": "Email Routine Dashboard",
+            "root": os.path.abspath(os.path.dirname(HERE)),
+            "pid": os.getpid()}
 
 
 API = {

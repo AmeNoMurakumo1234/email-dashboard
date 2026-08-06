@@ -140,8 +140,27 @@ Write-Host "`nStarting" -ForegroundColor Cyan
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dashboard 'start-dashboard.ps1') -Port $Port | Out-Null
 Start-Sleep -Seconds 2
 try {
-    $null = Invoke-WebRequest "http://127.0.0.1:$Port/api/whoami" -UseBasicParsing -TimeoutSec 5
-    Say "dashboard responding on http://127.0.0.1:$Port" 'Green'
+    $who = Invoke-RestMethod "http://127.0.0.1:$Port/api/whoami" -TimeoutSec 5
+    # CONFIRM IT IS *THIS* INSTALL ANSWERING. start-dashboard.ps1 is deliberately polite and
+    # no-ops when the port already serves an email-dashboard - so a second install on the
+    # same machine started nothing, got the FIRST install's reply, and reported success.
+    # Green about the wrong copy is worse than a warning: it is the exact case where someone
+    # is testing a new version and wants to know it came up.
+    $mine = (Resolve-Path $App).Path.TrimEnd('\')
+    $theirs = if ($who.root) { $who.root.TrimEnd('\') } else { $null }
+    if ($theirs -and $theirs -ne $mine) {
+        Write-Host ""
+        Say "WARNING: port $Port is already served by a DIFFERENT install." 'Yellow'
+        Say "  answering : $theirs" 'Yellow'
+        Say "  this one  : $mine" 'Yellow'
+        Say "  Nothing was started for this copy. Re-run with -Port <other> to run both," 'Yellow'
+        Say "  or stop the other dashboard first." 'Yellow'
+    } elseif (-not $theirs) {
+        # An older build with no `root` in whoami. Say what is and is not known.
+        Say "dashboard responding on http://127.0.0.1:$Port (could not confirm which install)" 'Yellow'
+    } else {
+        Say "this install is serving on http://127.0.0.1:$Port" 'Green'
+    }
 } catch {
     Say "could not reach the dashboard yet - try start-dashboard.ps1 by hand" 'Yellow'
 }

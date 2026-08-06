@@ -9,7 +9,7 @@
       "name": "email-dashboard",
       "source": "./plugin",
       "description": "A local dashboard for an agent-run email routine. Triages your mail, files the money trail, and surfaces only what earned your attention - with a sandboxed reader that blocks every tracking pixel, per-sender link profiles that flag a trusted sender writing from somewhere new, and panels that alarm by seeing nothing (a biller that went quiet, a notice arriving for the fifth time).",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "author": {
         "name": "Ame No Murakumo"
       },

@@ -75,11 +75,28 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import credstore as secret_store  # noqa: E402  - the DPAPI store, not the stdlib
+import untrusted  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-# utf-8-sig: this file is hand-edited on Windows, where editors still write a BOM by default
-# and json.load raises on one.
-CONFIG = json.loads((ROOT / "config" / "accounts.json").read_text(encoding="utf-8-sig"))
+# Loaded LAZILY. This used to be read at import time, which made the module unimportable
+# without config - so the test suite could not run on a clean clone, and you had to install
+# before you could test. Deferred behind a function, a missing file now surfaces where it
+# means something (at the command that needs it) instead of at `import`.
+_CONFIG = None
+
+
+def config():
+    global _CONFIG
+    if _CONFIG is None:
+        try:
+            # utf-8-sig: hand-edited on Windows, where editors still add a BOM by default
+            # and json.load raises on one.
+            _CONFIG = json.loads(
+                (ROOT / "config" / "accounts.json").read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            _CONFIG = {"accounts": []}
+    return _CONFIG
+
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 SCOPE = "https://graph.microsoft.com/Mail.Read offline_access"
@@ -94,11 +111,11 @@ def _authority():
     """Which Microsoft accounts may sign in. Default MUST match mailtool.py's: both read
     the same config key, and two backends disagreeing on its default is a bug that only
     shows up when someone switches provider and their sign-in silently changes meaning."""
-    return str(CONFIG.get("ms_authority") or "common").strip("/ ") or "common"
+    return str(config().get("ms_authority") or "common").strip("/ ") or "common"
 
 
 def _client_id():
-    cid = CONFIG.get("ms_client_id")
+    cid = config().get("ms_client_id")
     if not cid:
         raise SystemExit(
             "ERROR: no 'ms_client_id' in config/accounts.json.\n"
@@ -126,7 +143,7 @@ def _client_id():
 
 
 def account_config(addr):
-    for acct in CONFIG["accounts"]:
+    for acct in config()["accounts"]:
         if acct["email"].lower() == addr.lower():
             return acct
     raise SystemExit(f"ERROR: {addr} is not in config/accounts.json")
@@ -496,7 +513,7 @@ class Graph:
 
 
 def cmd_doctor(args, gc):
-    targets = [a for a in CONFIG["accounts"]
+    targets = [a for a in config()["accounts"]
                if a.get("provider") == "graph"
                and (not args.account or a["email"].lower() == args.account.lower())]
     if not targets:
@@ -504,7 +521,7 @@ def cmd_doctor(args, gc):
         # unless it says WHY there was nothing to check - that ambiguity is the exact shape
         # of failure this project keeps meeting.
         other = [a["email"] + " (provider=" + str(a.get("provider")) + ")"
-                 for a in CONFIG["accounts"]]
+                 for a in config()["accounts"]]
         print(json.dumps({
             "connected": 0, "total": 0, "accounts": [],
             "error": "NO GRAPH ACCOUNTS CONFIGURED - this checked nothing, it is not an all-clear",
@@ -634,12 +651,27 @@ def cmd_fetch(args, gc):
                 entry["snippet"] = (m.get("bodyPreview") or "").strip()[:400]
             if args.with_hosts:
                 entry["link_hosts"] = _link_hosts(m.get("body"))
+            # SAME LABELLING AS THE IMAP BACKEND, and it was missing here for a whole
+            # release. apply_proposal refuses to bin anything carrying injection_signals -
+            # a good guard - but a Graph-fetched message never had the field, so the guard
+            # could not fire. It failed OPEN, silently, with no error or warning, in
+            # exactly the case it exists for: Graph is the Microsoft 365 path, so the
+            # deployments most likely to adopt this were the ones getting none of it.
+            #
+            # The bug class is "a second implementation of an interface misses a
+            # cross-cutting concern". test_backend_parity.py now fails if any backend
+            # forgets, because the next one will.
+            untrusted.annotate(entry)
             messages.append(entry)
             if len(messages) >= args.limit:
                 break
         url = page.get("@odata.nextLink")
 
+    flagged = [m for m in messages if m.get("injection_signals")]
     out = {"account": addr, "mailbox": args.folder,
+           # Travels with the data rather than living only in a skill file.
+           "_UNTRUSTED": untrusted.NOTICE,
+           "injection_flagged": len(flagged),
            # `days` and `offset_from_newest` echo mailtool.py's fetch envelope so callers
            # need no per-backend branching.
            "days": args.days, "offset_from_newest": args.offset,
