@@ -740,6 +740,32 @@ PROTECTED_FILE = os.path.join(CONFIG_DIR, "protected.local.json")
 
 
 ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "accounts.json")
+DASHBOARD_FILE = os.path.join(CONFIG_DIR, "dashboard.local.json")
+
+
+def api_features(conn, q):
+    """Which OPTIONAL panels this deployment has switched on.
+
+    Steam sale tracking is a real feature and a personal one: it says something about how
+    somebody spends their time, which a mail triage tool has no business assuming. So it is
+    off unless asked for, and an absent config means off rather than on - the same
+    fail-closed direction as everything else here, applied to taste instead of safety.
+
+    Read fresh each call so toggling it does not need a restart, and never raises: an
+    unreadable file falls back to every optional panel off, which is the harmless answer.
+    """
+    panels = {"steam": False}
+    try:
+        with open(DASHBOARD_FILE, encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+        for name, on in (cfg.get("panels") or {}).items():
+            if not str(name).startswith("_"):
+                panels[str(name)] = bool(on)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        panels["_error"] = "%s: %s" % (type(e).__name__, e)
+    return {"panels": panels}
 
 
 def api_setup(conn, q):
@@ -1604,6 +1630,7 @@ def api_whoami(conn, q):
 API = {
     "/api/whoami": api_whoami,
     "/api/setup": api_setup,
+    "/api/features": api_features,
     "/api/runs": api_runs,
     "/api/run": api_run,
     "/api/trash/stats": api_trash_stats,

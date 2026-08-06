@@ -183,6 +183,7 @@ async function init() {
     else if (!$("#acctModal").hidden) $("#acctModal").hidden = true;
   });
 
+  await loadFeatures();            // before the first setView, or a hidden tab can be restored
   loadSetup().catch(() => {});     // first thing a new install needs, and silent once done
   await loadAcks();                // before the first render, so state is right immediately
   await loadRun();
@@ -198,7 +199,20 @@ async function loadRun() {
   // string "null" on the wire, which the server then echoed back as a run date.
   const data = await get("/api/run" +
     (currentDate ? "?date=" + encodeURIComponent(currentDate) : ""));
-  $("#subtitle").textContent = data.run_date ? `showing run for ${data.run_date}` : "no runs yet";
+  // THE SELECTED DATE IS THE LOUDEST THING IN THE HEADER. It was small grey text reading
+  // "showing run for 2026-08-06", which meant that after switching days you had to hunt the
+  // page to find out which day you were on - the one fact every other number depends on.
+  if (data.run_date) {
+    const isLatest = !newestDate || data.run_date === newestDate;
+    $("#subtitle").innerHTML =
+      `<span class="showing-label">showing</span>` +
+      `<span class="showing-date">${esc(data.run_date)}</span>` +
+      (isLatest ? `<span class="showing-tag">latest</span>`
+                : `<span class="showing-tag older">older run</span>`);
+  } else {
+    $("#subtitle").innerHTML = `<span class="showing-label">no runs yet</span>`;
+  }
+  markSelectedDay();      // keep the grid's ring on the same day as the header
   $("#summaryDate").textContent = data.run_date ? `(${data.run_date})` : "";
 
   // KPIs
@@ -1193,6 +1207,28 @@ async function openAccount(addr) {
       : '<div class="muted">nothing flagged for this box</div>') + "</div>";
 }
 
+// ---------- optional panels ----------
+
+let features = { steam: false };
+
+async function loadFeatures() {
+  try {
+    const data = await get("/api/features");
+    features = Object.assign(features, data.panels || {});
+  } catch (e) {
+    // Unreachable config means every OPTIONAL panel stays off. Nothing here is load-bearing,
+    // so the harmless answer is the right one.
+  }
+  const tab = document.querySelector('.ptab[data-view="steam"]');
+  if (tab) tab.hidden = !features.steam;
+  // A view persisted from when the panel WAS on would otherwise restore a tab that is now
+  // hidden, leaving an empty panel and no visible tab explaining it.
+  if (!features.steam && ui.view === "steam") {
+    ui.view = "trash";
+    persistUI();
+  }
+}
+
 // ---------- first run: what still needs doing, and how to do it ----------
 
 async function loadSetup() {
@@ -1537,6 +1573,23 @@ const CONCEPT_TINT = {
   logistics: "#94a3b8", questions: "#fb923c", calendar: "#a3e635", other: "#94a3b8",
 };
 
+// WHICH DAY AM I LOOKING AT. The grid is the main way in, and until now nothing on it said
+// which cell was currently selected - so every time the day changed, the answer had to be
+// hunted for elsewhere on the page. The ring is moved rather than the grid redrawn, so this
+// is cheap enough to call on every date change.
+function markSelectedDay() {
+  const ring = document.getElementById("hmSel");
+  if (!ring) return;
+  const cell = currentDate
+    ? document.querySelector(`#heatmap rect.hm-day[data-date="${currentDate}"]`)
+    : null;
+  if (!cell) { ring.setAttribute("visibility", "hidden"); return; }
+  // Centred on the cell: the ring is 6px larger, so it sits 3px outside on every edge.
+  ring.setAttribute("x", String(parseFloat(cell.getAttribute("x")) - 3));
+  ring.setAttribute("y", String(parseFloat(cell.getAttribute("y")) - 3));
+  ring.setAttribute("visibility", "visible");
+}
+
 async function loadHeatmap() {
   const data = await get("/api/calendar");
   const days = data.days || [];
@@ -1615,7 +1668,14 @@ async function loadHeatmap() {
   $("#heatmap").innerHTML =
     `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" ` +
     `role="img" aria-label="Every run day, shaded by volume and tinted by topic">` +
-    parts.join("") + "</svg>";
+    parts.join("") +
+    // The selection ring lives OUTSIDE the cells, drawn last so it is never clipped by a
+    // neighbour and never has to fight a fill for contrast. Moved rather than redrawn, so
+    // switching days does not rebuild the grid.
+    `<rect id="hmSel" class="hm-sel" width="${CELL + 6}" height="${CELL + 6}" rx="5" ` +
+    `pointer-events="none" visibility="hidden"/>` +
+    "</svg>";
+  markSelectedDay();
 
   const t = data.totals || {};
   allTime = t;                          // context for the KPI drill-downs

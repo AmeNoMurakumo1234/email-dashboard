@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.0 — say which day you are looking at, and stop assuming what people play
+
+### Fixed — you had to hunt the page to find which day was selected
+
+The selected run date is the fact every other number on the page depends on, and it was the
+quietest thing in the header: 13px grey text reading "showing run for 2026-08-06". Switching
+days meant searching for the answer.
+
+- The date is now **the loudest thing in the header** — large, accent-coloured, with a tag
+  saying whether it is the **latest** run or an **older run** you deliberately went back to.
+  That second state was previously invisible, which is the one worth knowing.
+- **The heatmap shows which cell is selected.** The grid is the main way to change days and
+  had no selected state at all. A ring is drawn outside the cell — never clipped by a
+  neighbour, never fighting a fill for contrast — and it moves rather than redrawing the
+  grid, so it is cheap enough to update on every change.
+- The run picker now reads as holding a real selection rather than sitting there looking like
+  an empty control.
+
+All three stay in agreement: clicking a day in the grid moves the ring, updates the header
+date and its tag, and syncs the picker.
+
+### Changed — the Steam panel is optional, and off by default
+
+Steam sale tracking is a real feature and a personal one: it says something about how someone
+spends their time, which a mail triage tool has no business assuming. It is now switched by
+`config/dashboard.local.json` and **off unless you turn it on** — an absent config means off,
+the same fail-closed direction as everything else here, applied to taste instead of safety.
+
+Turning it off hides the tab and the panel, and a view persisted from when it was on falls
+back rather than restoring a tab that no longer exists.
+
+### Documented
+
+`INSTALL.md` now leads with the two things that actually stop an install, before the first
+command rather than after a confusing failure: **Python must be on PATH** — which the
+installer checks and stops on, and which on a managed machine may simply not be possible —
+and **Windows only**, because the launcher, autostart and credential store are.
+
 ## 0.4.0 — the agent that reads the mail no longer holds the power to act on it
 
 The gap this closes, from the install report: *"one agent both ingests untrusted input and

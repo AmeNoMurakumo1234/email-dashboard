@@ -1,5 +1,23 @@
 # Installing
 
+## Before you start — the thing that stops most installs
+
+**Python 3.11+ must be on your PATH.** This is the most common failure here and the one the
+installer cannot fix for you: on a managed or work machine you may not be permitted to
+install software at all, and if that is the case, this tool is not installable there. The
+installer checks first and stops with a plain message rather than failing later in a
+confusing way.
+
+```powershell
+python --version    # if this errors, install Python, then open a NEW terminal and retry
+```
+
+Nothing else is required. The tool is standard-library only — no pip, no virtualenv, no
+third-party code between your mailbox and you.
+
+**Windows only, for now.** The launcher and login autostart are PowerShell and VBS, and the
+credential store is Windows DPAPI. The Python itself is portable; those three are not.
+
 ## 1. Install
 
 ```powershell

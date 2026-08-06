@@ -1,0 +1,16 @@
+{
+  "_README": [
+    "OPTIONAL PANELS. Copy to dashboard.local.json and edit; the .local.json is gitignored",
+    "and never leaves your machine. An absent file means every optional panel is OFF, which",
+    "is the right default for a feature nobody asked for.",
+    "",
+    "steam: tracks Steam wishlist/sale end dates and shows a panel for them. It is a real",
+    "feature and a genuinely personal one - it says something about how you spend your time,",
+    "which is not a thing a mail triage tool should assume about you. Off unless you turn it",
+    "on. Turning it on also needs dashboard/steam_refresh.local.json for age-gated titles."
+  ],
+
+  "panels": {
+    "steam": false
+  }
+}

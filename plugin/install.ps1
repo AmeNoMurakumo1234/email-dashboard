@@ -70,7 +70,8 @@ foreach ($pair in @(
     # Created even though an absent one is harmless, purely so it is DISCOVERABLE. The
     # label-extension mechanism is invisible until you need it, and by then the symptom is
     # labels quietly resolving to UNMAPPED with nothing pointing at the fix.
-    @{ ex = 'concepts.example.json'; local = 'concepts.local.json'; dir = $Dashboard }
+    @{ ex = 'concepts.example.json'; local = 'concepts.local.json'; dir = $Dashboard },
+    @{ ex = 'dashboard.example.json'; local = 'dashboard.local.json'; dir = $ConfigDir }
 )) {
     $src = Join-Path $pair.dir $pair.ex
     $dst = Join-Path $pair.dir $pair.local
