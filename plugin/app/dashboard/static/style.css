@@ -273,6 +273,12 @@ td.acctcell { color: var(--muted); font-size: 12px; word-break: break-all; }
           margin-bottom: 9px; background: var(--panel-2); }
 .wf-row.today, .wf-row.soon { border-color: #f87171; background: #1c1416; }
 .wf-row.done { opacity: .55; }
+
+/* The new-host panel borrows the workflow row, in amber rather than blue: it is a question
+   worth answering, not a task with a deadline. `weighty` marks the ones where being wrong
+   would actually cost something - a bank or a login notice rather than a promo blast. */
+.panel.hosts { border-color: #d97706; border-left: 3px solid #d97706; }
+.panel.hosts .wf-row.weighty { border-color: #f59e0b; background: #1d1710; }
 .wf-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
           font-size: 12px; margin-bottom: 5px; }
 .wf-ico { font-size: 15px; }

@@ -60,7 +60,7 @@ check("'other' is a real concept and still resolves",
 _local_map = {}
 try:
     import json as _json
-    with open(os.path.join(HERE, "concepts.local.json"), encoding="utf-8") as _f:
+    with open(os.path.join(HERE, "concepts.local.json"), encoding="utf-8-sig") as _f:
         for _concept, _labels in (_json.load(_f).get("concepts") or {}).items():
             for _l in _labels or []:
                 _local_map[str(_l).lower()] = _concept

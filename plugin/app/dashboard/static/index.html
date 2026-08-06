@@ -31,6 +31,21 @@
     <div id="wfList"></div>
   </section>
 
+  <!-- A SENDER YOU KNOW, POINTING SOMEWHERE IT NEVER HAS. This is the one check here that
+       is noise-free by construction: it cannot fire on a stranger, and it stays silent on
+       the ESP redirectors a naive does-the-domain-match test screams about. It used to
+       print to a terminal and live only in that day's prose, which made the sharpest signal
+       in this lane also the easiest to scroll past.
+       Hidden whenever nothing is unreviewed - and a verdict retires the pairing for good,
+       so this can sit on the page without becoming the noise it exists to cut through. -->
+  <section class="panel hosts" id="hostPanel" hidden>
+    <h2 class="wf-head">
+      <span>🔗 A known sender used a new link host <span class="muted" id="hostCount"></span></span>
+      <button class="linkbtn" id="hostShowDone" type="button">show reviewed</button>
+    </h2>
+    <div id="hostList"></div>
+  </section>
+
   <section class="kpis" id="kpis"></section>
 
   <!-- THE WHOLE RECORD AS ONE GRID. The run history used to be a dropdown of dates, which

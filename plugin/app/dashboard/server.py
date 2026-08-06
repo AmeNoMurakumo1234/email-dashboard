@@ -329,6 +329,72 @@ def api_acks(conn, q):
         "ORDER BY acked_at DESC"))}
 
 
+def api_new_hosts(conn, q):
+    """What the new-host check found, and what has not been looked at yet.
+
+    The panel this feeds hides itself when `open` is empty, on the same principle as the VA
+    panel: something that is always on screen stops being read. `reviewed` is returned too,
+    but only so the UI can offer it behind a toggle - it is history, not an alert.
+
+    Ordered so the ones that would cost something come first. A promo blast pointing at a
+    new CDN and a bank pointing at a host it has never used are the same event to a scanner
+    and very different events to a person.
+    """
+    show = (q.get("show") or ["open"])[0]
+    if show not in ("open", "reviewed", "all"):
+        raise ValueError("show must be one of: open, reviewed, all")
+    cols = ("sender_key, host, sender, account, subject, profile_messages, weighty, "
+            "first_flagged, last_flagged, times_seen, verdict, verdict_note, verdict_by, "
+            "verdict_at")
+    order = " ORDER BY weighty DESC, profile_messages DESC, last_flagged DESC"
+    openr = rows(conn.execute(
+        f"SELECT {cols} FROM host_flags WHERE verdict IS NULL{order}"))
+    out = {"open": openr, "open_count": len(openr)}
+    if show in ("reviewed", "all"):
+        out["reviewed"] = rows(conn.execute(
+            f"SELECT {cols} FROM host_flags WHERE verdict IS NOT NULL{order}"))
+    # An empty `open` from an EMPTY TABLE is not the same claim as an empty `open` from a
+    # table full of cleared pairings, and the UI must be able to tell them apart. A check
+    # that has never run reporting "nothing to see" is the false all-clear this lane keeps
+    # meeting; say how much was ever examined instead of implying a clean bill of health.
+    out["ever_flagged"] = conn.execute("SELECT COUNT(*) c FROM host_flags").fetchone()["c"]
+    out["profiled_senders"] = conn.execute(
+        "SELECT COUNT(*) c FROM sender_profile WHERE messages >= ?",
+        (PROFILE_MIN_MESSAGES,)).fetchone()["c"]
+    return out
+
+
+def api_host_review(conn, q, body=None):
+    """Rule on a (sender, host) pairing. POST only.
+
+    Reversible on purpose: pass `verdict: null` to put it back in the open list. A verdict
+    is a statement about attention and judgment, and a wrong one has to be undoable - the
+    same reasoning as un-acknowledging.
+    """
+    body = body or {}
+    key = (body.get("sender_key") or "").strip()
+    host = (body.get("host") or "").strip()
+    if not key or not host:
+        return {"ok": False, "error": "sender_key and host are both required"}
+    verdict = body.get("verdict")
+    if verdict is not None:
+        verdict = str(verdict).strip().lower()
+        if verdict not in ("cleared", "suspicious"):
+            return {"ok": False, "error": "verdict must be 'cleared', 'suspicious', or null"}
+    exists = conn.execute(
+        "SELECT 1 FROM host_flags WHERE sender_key = ? AND host = ?", (key, host)).fetchone()
+    if not exists:
+        return {"ok": False, "error": "no such flagged pairing"}
+    conn.execute(
+        "UPDATE host_flags SET verdict = ?, verdict_note = ?, verdict_by = ?, verdict_at = ? "
+        "WHERE sender_key = ? AND host = ?",
+        (verdict, (body.get("note") or "").strip() or None,
+         (body.get("by") or "owner").strip(),
+         db.now_iso() if verdict else None, key, host))
+    conn.commit()
+    return {"ok": True, "sender_key": key, "host": host, "verdict": verdict}
+
+
 def api_ack(conn, q, body=None):
     """Acknowledge (or un-acknowledge) an item. POST only.
 
@@ -674,9 +740,18 @@ def load_protected():
     rule-writing path refuses outright. An absent guard must never be read as "nothing is
     protected" - that is precisely the direction in which family mail gets silenced, and it
     is the same reassuring-failure shape this lane keeps meeting.
+
+    A PARSEABLE FILE IS NOT A CONFIGURED ONE. This returned `configured: True` for anything
+    that was valid JSON, and the installer copied the template verbatim - so a fresh install
+    reported itself armed while every name in it was a placeholder that matches no real
+    sender. The guard presented as on and protected nobody: the reassuring failure, in the
+    installer, in the one file whose entire job is to prevent it. An empty name list now
+    reads as unconfigured too, and the placeholders themselves are `_`-prefixed upstream so
+    a verbatim copy yields zero names. Either fix alone closes it; both are in place because
+    this one is worth closing twice.
     """
     try:
-        with open(PROTECTED_FILE, encoding="utf-8") as f:
+        with open(PROTECTED_FILE, encoding="utf-8-sig") as f:
             cfg = json.load(f)
     except Exception as e:
         return {"configured": False, "why": "%s: %s" % (type(e).__name__, e),
@@ -685,6 +760,14 @@ def load_protected():
     names = [str(n).strip().lower() for n in cfg.get("protected_names", [])
              # the template carries italic _explanatory_ lines; they are not names
              if str(n).strip() and not str(n).strip().startswith("_")]
+    if not names:
+        return {"configured": False,
+                "why": "%s has no protected names yet - every entry is still a template "
+                       "placeholder or the list is empty. Add the people, employers, banks "
+                       "and correspondents whose mail must never be auto-trashed."
+                       % os.path.basename(PROTECTED_FILE),
+                "names": [], "concepts": set(cfg.get("protected_concepts") or []),
+                "workflow_senders": {}, "link_domain": "", "min_messages": 8}
     return {
         "configured": True, "why": "",
         "names": names,
@@ -1381,6 +1464,7 @@ API = {
     "/api/message": api_message,
     "/api/steam/sales": api_steam_sales,
     "/api/steam/refresh": api_steam_refresh,
+    "/api/new-hosts": api_new_hosts,
 }
 
 # Writing endpoints are a SEPARATE table, reachable only via do_POST and only after the
@@ -1389,6 +1473,7 @@ API = {
 WRITE_API = {
     "/api/ack": api_ack,
     "/api/sender-rule": api_sender_rule,
+    "/api/host-review": api_host_review,
 }
 
 

@@ -141,6 +141,38 @@ CREATE TABLE IF NOT EXISTS steam_sales (
 );
 
 CREATE INDEX IF NOT EXISTS idx_steam_active ON steam_sales(active);
+
+-- THE NEW-HOST CHECK'S FINDINGS, KEPT INSTEAD OF PRINTED.
+--
+-- check_new_hosts.py is the one instrument in this lane that is noise-free by construction:
+-- it fires only when a sender with an established profile links somewhere it never has.
+-- Its output used to exist nowhere but a terminal and whatever prose the run report carried,
+-- which means the sharpest security signal here was also the most likely to scroll past.
+--
+-- One row per (sender, new host), not per message: the QUESTION is "is this host normal for
+-- this sender", and that question is asked once. A verdict therefore silences the pairing
+-- for good rather than for a day, which is what keeps the panel from becoming the noise it
+-- exists to cut through. verdict NULL = nobody has looked yet; that is the only state the
+-- dashboard shouts about.
+CREATE TABLE IF NOT EXISTS host_flags (
+    sender_key        TEXT NOT NULL,           -- normalised sender (server._sender_key)
+    host              TEXT NOT NULL,           -- the host that was new for this sender
+    sender            TEXT,                    -- display From, as it arrived
+    account           TEXT,
+    subject           TEXT,                    -- the message that first showed this pairing
+    profile_messages  INTEGER,                 -- how much history stands behind the sender
+    weighty           INTEGER NOT NULL DEFAULT 0,  -- subject/sender matched a WEIGHTY term
+    first_flagged     TEXT,                    -- run date of the first sighting
+    last_flagged      TEXT,
+    times_seen        INTEGER NOT NULL DEFAULT 1,
+    verdict           TEXT,                    -- NULL = unreviewed | 'cleared' | 'suspicious'
+    verdict_note      TEXT,
+    verdict_by        TEXT,
+    verdict_at        TEXT,
+    PRIMARY KEY (sender_key, host)
+);
+
+CREATE INDEX IF NOT EXISTS idx_host_flags_open ON host_flags(verdict);
 """
 
 

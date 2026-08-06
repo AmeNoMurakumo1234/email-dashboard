@@ -1,5 +1,8 @@
 """DPAPI-encrypted secret store for the email-cleanup task.
 
+Named credstore, NOT secrets: a module called secrets.py on sys.path shadows the standard
+library's for the whole process.
+
 Secrets live in secrets/secrets.store as a base64 DPAPI blob wrapping a JSON
 object: { "<account>": { "<field>": "<value>", ... }, ... }
 Fields used: password, app_password, ms_refresh_token, ms_access_token, ms_token_expiry.
@@ -8,10 +11,10 @@ DPAPI ties the blob to this Windows user on this machine - same model as the
 original accounts.credentials.enc.
 
 CLI (never prints secret values):
-  python tools/secrets.py list
-  python tools/secrets.py set <account> <field>      # value read from stdin
-  python tools/secrets.py del <account> [<field>]
-  python tools/secrets.py import-json                # merge {"acct":{"field":"val"}} from stdin
+  python tools/credstore.py list
+  python tools/credstore.py set <account> <field>    # prompts if a terminal, else stdin
+  python tools/credstore.py del <account> [<field>]
+  python tools/credstore.py import-json              # merge {"acct":{"field":"val"}} from stdin
 """
 import base64
 import ctypes
@@ -78,8 +81,45 @@ def set_value(account: str, field: str, value: str) -> None:
     save(store)
 
 
+USAGE = """usage:
+  python tools/credstore.py list
+  python tools/credstore.py set <account> <field>   # prompts if a terminal, else stdin
+  python tools/credstore.py del <account> [<field>]
+  python tools/credstore.py import-json             # {"acct":{"field":"val"}} on stdin
+
+fields: password, app_password, ms_refresh_token, ms_access_token, ms_token_expiry
+values are never printed back."""
+
+
+def _read_value(field):
+    """Prompt when a human is at the terminal; read stdin when piped.
+
+    THE OLD BEHAVIOUR WAS WORSE THAN A USAGE ERROR. This read stdin unconditionally and
+    parsed argv positionally with no argparse, so someone following a documented
+    `set --account <address>` bound account="--account", field=the address, and then blocked
+    silently on stdin.read() with nothing printed at all - a hung terminal and no prompt, at
+    exactly the moment the instructions had told them to be careful with a password. A
+    visible usage message is a better outcome than that, and a prompt is better still.
+
+    getpass keeps the value off the screen and out of shell history either way.
+    """
+    if sys.stdin.isatty():
+        import getpass
+        return getpass.getpass(f"{field} (input hidden, not echoed): ")
+    return sys.stdin.read()
+
+
 def main(argv):
     cmd = argv[0] if argv else "list"
+    # Reject flag-shaped arguments outright rather than silently treating them as values.
+    flags = [a for a in argv[1:] if a.startswith("-")]
+    if flags:
+        print(f"ERROR: unexpected option {flags[0]!r} - this CLI takes positional "
+              f"arguments only.\n\n{USAGE}", file=sys.stderr)
+        return 2
+    if cmd in ("-h", "--help", "help"):
+        print(USAGE)
+        return 0
     if cmd == "list":
         store = load()
         for account in sorted(store):
@@ -87,8 +127,11 @@ def main(argv):
         if not store:
             print("(store is empty)")
     elif cmd == "set":
+        if len(argv) < 3:
+            print(f"ERROR: set needs <account> and <field>.\n\n{USAGE}", file=sys.stderr)
+            return 2
         account, field = argv[1], argv[2]
-        value = sys.stdin.read().strip()
+        value = _read_value(field).strip()
         if field == "app_password":
             value = value.replace(" ", "")  # Gmail displays app passwords with spaces
         if not value:
@@ -97,6 +140,9 @@ def main(argv):
         set_value(account, field, value)
         print(f"stored {field} for {account} ({len(value)} chars)")
     elif cmd == "del":
+        if len(argv) < 2:
+            print("ERROR: del needs <account>.\n\n" + USAGE, file=sys.stderr)
+            return 2
         store = load()
         account = argv[1]
         if len(argv) > 2:
@@ -113,8 +159,8 @@ def main(argv):
         save(store)
         print(f"imported {len(incoming)} account(s)")
     else:
-        print(__doc__)
-        return 1
+        print("ERROR: unknown command %r.\n\n%s" % (cmd, USAGE), file=sys.stderr)
+        return 2
     return 0
 
 

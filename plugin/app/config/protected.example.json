@@ -18,11 +18,16 @@
     "_Matched case-insensitively as substrings, so a first name covers its variants._",
     "_Put your family here, anyone whose mail you must never miss, your employer,_",
     "_your banks, your doctor, your government correspondents._",
-    "a-family-member",
-    "another-family-member",
-    "your-bank",
-    "your-employer",
-    "your-doctor"
+    "_REPLACE THE LINES BELOW. They are underscore-prefixed on purpose: the dashboard_",
+    "_ignores any entry starting with _, so this file copied verbatim yields ZERO names_",
+    "_and the guard reports itself UNCONFIGURED rather than armed-but-protecting-nobody._",
+    "_Strip the leading underscore from each line you fill in._",
+
+    "_a-family-member",
+    "_another-family-member",
+    "_your-bank",
+    "_your-employer",
+    "_your-doctor"
   ],
 
   "protected_concepts": [

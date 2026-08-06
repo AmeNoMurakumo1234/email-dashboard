@@ -16,10 +16,23 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$AppRoot   = Split-Path -Parent $PSScriptRoot          # ...\plugin\dist
+# This script sits BESIDE app/, not in a dist/ subfolder. An earlier version took the
+# PARENT of its own directory, so every path pointed at a sibling of the plugin that does
+# not exist - the config copy and the schema step both failed and nobody could install it.
+# It shipped because the installer had only ever been syntax-checked, never run.
+$AppRoot   = $PSScriptRoot
 $App       = Join-Path $AppRoot 'app'
 $Dashboard = Join-Path $App 'dashboard'
 $ConfigDir = Join-Path $App 'config'
+
+# Fail here, naming the layout, rather than 40 lines later on a confusing Join-Path error.
+if (-not (Test-Path $Dashboard)) {
+    Write-Host "`nERROR: expected the app tree beside this script." -ForegroundColor Red
+    Write-Host "  looked for : $Dashboard" -ForegroundColor Red
+    Write-Host "  script dir : $PSScriptRoot" -ForegroundColor Red
+    Write-Host "  Run install.ps1 from the plugin folder that contains app\." -ForegroundColor Yellow
+    exit 1
+}
 $StartupDir = [Environment]::GetFolderPath('Startup')
 $VbsPath   = Join-Path $StartupDir 'EmailDashboard.vbs'
 
@@ -53,7 +66,11 @@ Write-Host "`nConfig" -ForegroundColor Cyan
 foreach ($pair in @(
     @{ ex = 'protected.example.json'; local = 'protected.local.json'; dir = $ConfigDir },
     @{ ex = 'steam_refresh.example.json'; local = 'steam_refresh.local.json'; dir = $Dashboard },
-    @{ ex = 'categorize.example.json'; local = 'categorize.local.json'; dir = $Dashboard }
+    @{ ex = 'categorize.example.json'; local = 'categorize.local.json'; dir = $Dashboard },
+    # Created even though an absent one is harmless, purely so it is DISCOVERABLE. The
+    # label-extension mechanism is invisible until you need it, and by then the symptom is
+    # labels quietly resolving to UNMAPPED with nothing pointing at the fix.
+    @{ ex = 'concepts.example.json'; local = 'concepts.local.json'; dir = $Dashboard }
 )) {
     $src = Join-Path $pair.dir $pair.ex
     $dst = Join-Path $pair.dir $pair.local
@@ -75,7 +92,14 @@ $accounts = Join-Path $ConfigDir 'accounts.json'
 if (-not (Test-Path $accounts)) {
     # Deliberately EMPTY. The onboarding skill fills this in, one mailbox at a time,
     # with the owner present.
-    '{ "accounts": [] }' | Set-Content $accounts -Encoding UTF8
+    # WriteAllText with an explicit BOM-less encoder, NOT Set-Content -Encoding UTF8.
+    # Windows PowerShell 5.1's "UTF8" means utf-8-WITH-BOM, and Python's json.load raises
+    # on a leading BOM - so this one line made accounts.json unreadable on every fresh
+    # install under 5.1, while working fine under PowerShell 7. Found by running the
+    # installer for real; no amount of reading it would have shown this.
+    [System.IO.File]::WriteAllText(
+        $accounts, "{ `"accounts`": [] }`r`n",
+        (New-Object System.Text.UTF8Encoding $false))
     Say "created accounts.json with NO mailboxes - add yours via the onboarding skill" 'Green'
 } else {
     Say "accounts.json already exists - left alone" 'Yellow'
@@ -103,7 +127,7 @@ if ($NoAutostart) {
 ' Calls start-dashboard.ps1, which is a no-op if the dashboard is already running.
 ' Delete this file to disable autostart, or run install.ps1 -Uninstall.
 Set sh = CreateObject("WScript.Shell")
-sh.Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$starter""", 0, False
+sh.Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$starter"" -Port $Port", 0, False
 "@
     $vbs | Set-Content $VbsPath -Encoding ASCII
     Say "registered $VbsPath" 'Green'
@@ -112,7 +136,7 @@ sh.Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File 
 
 # --- 5. Start it now ----------------------------------------------------------------
 Write-Host "`nStarting" -ForegroundColor Cyan
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dashboard 'start-dashboard.ps1') | Out-Null
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Dashboard 'start-dashboard.ps1') -Port $Port | Out-Null
 Start-Sleep -Seconds 2
 try {
     $null = Invoke-WebRequest "http://127.0.0.1:$Port/api/whoami" -UseBasicParsing -TimeoutSec 5

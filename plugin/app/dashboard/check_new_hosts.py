@@ -50,6 +50,9 @@ def main():
     ap.add_argument("--days", type=int, default=2)
     ap.add_argument("--account")
     ap.add_argument("--limit", type=int, default=200)
+    ap.add_argument("--run-date", help="date to stamp saved findings with (default: today)")
+    ap.add_argument("--no-save", action="store_true",
+                    help="print only; do not record findings in host_flags")
     args = ap.parse_args()
 
     conn = sqlite3.connect(DB)
@@ -100,15 +103,57 @@ def main():
     print(f"\n{len(findings)} message(s) where an established sender used a NEW host:\n")
     for f in findings:
         haystack = ((f["subject"] or "") + " " + (f["sender"] or "")).lower()
-        weighty = any(re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", haystack)
-                      for w in WEIGHTY)
-        print(f"  {'** ' if weighty else '   '}{(f['sender'] or '')[:44]}")
+        f["weighty"] = any(re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", haystack)
+                           for w in WEIGHTY)
+        print(f"  {'** ' if f['weighty'] else '   '}{(f['sender'] or '')[:44]}")
         print(f"     {(f['subject'] or '')[:66]}")
         print(f"     profile: {f['profile_messages']} messages; "
               f"NEW: {', '.join(f['new_hosts'][:6])}")
     if not findings:
         print("  none - every link went to a host its sender has used before.")
+
+    if not args.no_save:
+        saved, already = _save(conn, findings, args.run_date)
+        print(f"\nrecorded to host_flags: {saved} new pairing(s), {already} already known "
+              f"(a pairing with a verdict is never re-opened)")
     return 0
+
+
+def _save(conn, findings, run_date=None):
+    """Persist each (sender, new host) pairing so the dashboard can show what is unreviewed.
+
+    ONE ROW PER PAIRING, not per message. The question being asked is "is this host normal
+    for this sender", and it is the same question however many messages raise it - so a
+    second sighting bumps a counter instead of re-opening something already judged. That is
+    the whole reason this can live on the page without becoming the noise it exists to cut.
+
+    An existing verdict is never overwritten here. A human's ruling is not something a scan
+    gets to undo on its next pass.
+    """
+    import datetime
+    day = run_date or datetime.date.today().isoformat()
+    saved = already = 0
+    for f in findings:
+        key = _sender_key(f["sender"])
+        for host in f["new_hosts"]:
+            row = conn.execute(
+                "SELECT times_seen FROM host_flags WHERE sender_key = ? AND host = ?",
+                (key, host)).fetchone()
+            if row:
+                conn.execute("UPDATE host_flags SET times_seen = times_seen + 1, "
+                             "last_flagged = ? WHERE sender_key = ? AND host = ?",
+                             (day, key, host))
+                already += 1
+            else:
+                conn.execute(
+                    "INSERT INTO host_flags (sender_key, host, sender, account, subject, "
+                    "profile_messages, weighty, first_flagged, last_flagged, times_seen) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,1)",
+                    (key, host, f["sender"], f["account"], f["subject"],
+                     f["profile_messages"], 1 if f.get("weighty") else 0, day, day))
+                saved += 1
+    conn.commit()
+    return saved, already
 
 
 if __name__ == "__main__":

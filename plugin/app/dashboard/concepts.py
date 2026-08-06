@@ -139,7 +139,7 @@ def _load_local_labels():
     path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
                          "concepts.local.json")
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             local = _json.load(f)
     except FileNotFoundError:
         return 0

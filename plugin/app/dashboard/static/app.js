@@ -167,6 +167,7 @@ async function init() {
   if (scopeRadio) scopeRadio.checked = true;
 
   $("#wfShowDone").addEventListener("click", () => { wfShowDone = !wfShowDone; loadWorkflowActions(); });
+  $("#hostShowDone").addEventListener("click", () => { hostShowDone = !hostShowDone; loadNewHosts(); });
   $("#amClose").addEventListener("click", () => { $("#acctModal").hidden = true; });
   $("#acctModal").addEventListener("click", (e) => {
     if (e.target.id === "acctModal") $("#acctModal").hidden = true;
@@ -178,6 +179,7 @@ async function init() {
   await loadAcks();                // before the first render, so state is right immediately
   await loadRun();
   loadWorkflowActions().catch(() => {}); // never let this panel block the rest of the page
+  loadNewHosts().catch(() => {});        // same: a quiet panel must never break a loud one
   loadHeatmap().catch(() => {});   // decorative-adjacent: never block the run view on it
   setView(ui.view);   // restore the tab the user left on (trash | steam)
   $("#footer").textContent = `${runs.length} run(s) recorded · data refreshed each daily routine run`;
@@ -1278,6 +1280,78 @@ async function loadWorkflowActions() {
       ` &middot; <span class="muted">shown here until ${data.horizon} days out</span>`;
     wrap.appendChild(line);
   }
+}
+
+// ---------- A known sender pointing somewhere new ----------
+// The panel is deliberately quiet: it shows only pairings nobody has ruled on, and a ruling
+// retires the pairing permanently rather than for a day. A security panel that is on screen
+// every morning is one that stops being read, which would cost more than it buys.
+
+let hostShowDone = false;
+
+async function loadNewHosts() {
+  let data;
+  try {
+    data = await get("/api/new-hosts?show=all");
+  } catch (e) { return; }
+  const open = data.open || [];
+  const reviewed = data.reviewed || [];
+  const shown = hostShowDone ? open.concat(reviewed) : open;
+  const panel = $("#hostPanel");
+  panel.hidden = !shown.length;
+  if (panel.hidden) return;
+
+  $("#hostCount").textContent = hostShowDone
+    ? `(${open.length} unreviewed of ${data.ever_flagged} ever flagged)`
+    : `(${open.length}, from ${data.profiled_senders} senders with enough history to judge)`;
+  $("#hostShowDone").textContent = hostShowDone ? "hide reviewed" : "show reviewed";
+
+  const wrap = $("#hostList");
+  wrap.innerHTML = "";
+  shown.forEach((it) => {
+    const row = el("div", "wf-row" + (it.verdict ? " done" : "") +
+                          (it.weighty && !it.verdict ? " weighty" : ""));
+    // The host is NEVER a link. The entire premise of this panel is that we do not know
+    // where this host goes, so offering a click would hand someone the exact thing the
+    // check exists to catch.
+    row.innerHTML =
+      `<div class="wf-top"><span class="wf-ico">🔗</span>` +
+      `<span class="wf-kind">${esc(it.sender || it.sender_key)}</span>` +
+      `<span class="wf-auth">${it.profile_messages} messages of history</span>` +
+      (it.weighty ? '<span class="wf-auth bad">subject looks costly to get wrong</span>' : "") +
+      (it.times_seen > 1 ? `<span class="wf-auth">seen ${it.times_seen}x</span>` : "") +
+      (it.verdict ? `<span class="wf-auth done">${esc(it.verdict)}</span>` : "") +
+      "</div>" +
+      `<div class="wf-subj">${esc(it.subject || "(no subject)")}</div>` +
+      `<div class="wf-url">new host: <b>${esc(it.host)}</b>` +
+      ` &middot; first seen ${esc(it.first_flagged || "?")}</div>` +
+      (it.verdict_note ? `<div class="wf-url">note: ${esc(it.verdict_note)}</div>` : "");
+
+    const mk = (label, verdict) => {
+      const b = el("button", "linkbtn wf-ack");
+      b.textContent = label;
+      b.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        b.disabled = true;
+        try {
+          const r = await fetch("/api/host-review", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Dashboard": "1" },
+            body: JSON.stringify({ sender_key: it.sender_key, host: it.host, verdict }),
+          }).then((x) => x.json());
+          if (!r.ok) throw new Error(r.error || "refused");
+          loadNewHosts();
+        } catch (err) { b.disabled = false; b.textContent = "could not save"; }
+      });
+      return b;
+    };
+    if (it.verdict) row.appendChild(mk("undo - put it back", null));
+    else {
+      row.appendChild(mk("normal for them", "cleared"));
+      row.appendChild(mk("looks wrong", "suspicious"));
+    }
+    wrap.appendChild(row);
+  });
 }
 
 // ---------- Acknowledgement: "I have seen this" ----------

@@ -1,7 +1,7 @@
 """IMAP toolkit for the email-cleanup-and-summary daily routine.
 
 Connects to each account in config/accounts.json using credentials from the
-DPAPI secret store (tools/secrets.py):
+DPAPI secret store (tools/credstore.py):
   - gmail accounts:     IMAP + app password (field "app_password")
   - microsoft accounts: IMAP + OAuth2 (field "ms_refresh_token", via `auth-ms`)
 
@@ -34,14 +34,69 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import secrets as secret_store
+# credstore, NOT secrets. This directory goes on sys.path at position 0, so a module here
+# named secrets.py SHADOWS the standard library's for the whole process - and the
+# `as secret_store` alias does not prevent it, because shadowing happens at import, not at
+# binding. It stayed dormant only because nothing on the import path needed stdlib secrets;
+# the first person to reach for secrets.token_urlsafe in this tree would have got a module
+# that does not have it.
+import credstore as secret_store
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = json.loads((ROOT / "config" / "accounts.json").read_text(encoding="utf-8"))
+# utf-8-sig, not utf-8: these are hand-edited files on Windows, where editors still add
+# a BOM by default and json.load raises on one. The installer wrote a BOM here for a
+# while and made accounts.json unreadable on every fresh install.
+CONFIG = json.loads((ROOT / "config" / "accounts.json").read_text(encoding="utf-8-sig"))
 
-MS_TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
-MS_DEVICECODE_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
+# WHICH MICROSOFT ACCOUNTS CAN SIGN IN. This was hard-coded to /consumers/, which accepts
+# personal accounts ONLY - outlook.com, hotmail, live. A work or school mailbox does not
+# exist in the consumers tenant at all, so every business Microsoft user was rejected at
+# sign-in with no way to configure around it. That is most of the "Outlook" audience the
+# onboarding skill invites.
+#
+# `common` accepts both, which is the right default for a tool that does not know which
+# kind of account you have. Set "ms_authority" in accounts.json to narrow it:
+#   common         personal + work/school   (default)
+#   organizations  work/school only
+#   consumers      personal only
+#   <tenant-guid>  one specific tenant
+MS_AUTHORITY = str(CONFIG.get("ms_authority") or "common").strip("/ ") or "common"
+MS_TOKEN_URL = "https://login.microsoftonline.com/%s/oauth2/v2.0/token" % MS_AUTHORITY
+MS_DEVICECODE_URL = ("https://login.microsoftonline.com/%s/oauth2/v2.0/devicecode"
+                     % MS_AUTHORITY)
 MS_SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+
+
+def ms_client_id():
+    """The Entra ID app registration this tool signs in through.
+
+    Read through a function so a missing key names itself and says what to do. It used to be
+    CONFIG["ms_client_id"] inline, so the first thing every Microsoft user met was a bare
+    KeyError with no indication that an app registration was needed at all - and the
+    onboarding skill never mentioned the step either.
+
+    ONE registration per deployment, not per user: an admin registers it once, consents it
+    for the tenant, and everyone shares the id. It is not a secret - it identifies the app,
+    not the person - which is why it lives in accounts.json rather than the credential store.
+    """
+    cid = (CONFIG.get("ms_client_id") or "").strip()
+    if not cid:
+        raise SystemExit(
+            "ERROR: no \"ms_client_id\" in config/accounts.json.\n"
+            "\n"
+            "Microsoft sign-in needs an Entra ID app registration. Create one at\n"
+            "  https://entra.microsoft.com -> App registrations -> New registration\n"
+            "    * Supported account types: match your ms_authority (default 'common')\n"
+            "    * Authentication -> Allow public client flows: YES\n"
+            "    * API permissions -> Microsoft Graph -> Delegated ->\n"
+            "        offline_access, and IMAP.AccessAsUser.All from Office 365 Exchange Online\n"
+            "\n"
+            "Then put the Application (client) ID in config/accounts.json:\n"
+            "    { \"ms_client_id\": \"<guid>\", \"ms_authority\": \"common\", \"accounts\": [...] }\n"
+            "\n"
+            "One registration serves everyone in a deployment - it is not per user, and it\n"
+            "is not a secret.")
+    return cid
 
 socket.setdefaulttimeout(30)
 
@@ -66,7 +121,7 @@ def _post_form(url, fields):
 
 
 def ms_device_auth(addr):
-    client_id = CONFIG["ms_client_id"]
+    client_id = ms_client_id()
     dc = _post_form(MS_DEVICECODE_URL, {"client_id": client_id, "scope": MS_SCOPE})
     if "device_code" not in dc:
         raise SystemExit(f"ERROR: device-code request failed: {dc.get('error')}: {dc.get('error_description')}")
@@ -108,7 +163,7 @@ def ms_access_token(addr):
     if not refresh:
         raise RuntimeError("no OAuth tokens - run: python tools/mailtool.py auth-ms --account " + addr)
     tok = _post_form(MS_TOKEN_URL, {
-        "client_id": CONFIG["ms_client_id"],
+        "client_id": ms_client_id(),
         "grant_type": "refresh_token",
         "refresh_token": refresh,
         "scope": MS_SCOPE,
@@ -154,17 +209,35 @@ def connect(addr):
     raise RuntimeError(f"no credentials stored for {addr}")
 
 
+# One parser for an IMAP LIST line, used by everything that walks folders.
+#
+# There were two, and they did not agree. This one handles a quoted OR bare mailbox name;
+# the other matched only `"..."` at end of line, so on a server that returns simple names
+# unquoted - which is common and perfectly legal - `find --all-folders` silently skipped
+# every such folder and reported "not found" over a subset it never looked at.
+_LIST_LINE = re.compile(r'\((?P<flags>[^)]*)\)\s+"(?P<delim>[^"]*)"\s+(?P<name>.+)$')
+
+
+def parse_list_line(raw):
+    """-> (flags, mailbox name) for one LIST response line, or (None, None)."""
+    line = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+    m = _LIST_LINE.match(line.strip())
+    if not m:
+        return None, None
+    return m.group("flags"), m.group("name").strip().strip('"')
+
+
 def find_trash(conn):
     typ, listing = conn.list()
     candidates = []
     if typ == "OK":
         for raw in listing:
-            line = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
-            m = re.match(r'\((?P<flags>[^)]*)\)\s+"(?P<delim>[^"]*)"\s+(?P<name>.+)$', line)
-            if m and "\\Trash" in m.group("flags"):
-                return m.group("name").strip('"')
-            if m:
-                candidates.append(m.group("name").strip('"'))
+            flags, name = parse_list_line(raw)
+            if name is None:
+                continue
+            if "\\Trash" in flags:
+                return name
+            candidates.append(name)
     for guess in ("[Gmail]/Trash", "Trash", "Deleted", "Deleted Items"):
         if guess in candidates:
             return guess
@@ -441,9 +514,9 @@ def cmd_find(args):
         typ, boxes = conn.list()
         if typ == "OK":
             for line in boxes or []:
-                m = re.search(r'"([^"]*)"\s*$', line.decode(errors="replace"))
-                if m and m.group(1) not in seen:
-                    order.append(m.group(1)); seen.add(m.group(1))
+                _flags, name = parse_list_line(line)
+                if name and name not in seen:
+                    order.append(name); seen.add(name)
 
     for box in order:
         try:

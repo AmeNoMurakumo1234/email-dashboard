@@ -7,10 +7,26 @@
 # This launcher is "polite": if 9770 is already serving the email dashboard it no-ops; if 9770 is
 # occupied by something else (e.g. a stray worker server), it refuses to start rather than fight
 # for the port, and it NEVER roams to a different port (which could invade worker space).
-$ErrorActionPreference = 'SilentlyContinue'
-$port = 9770
+#
+# -Port is a real parameter. It used to be a hardcoded 9770 while install.ps1 accepted a
+# -Port switch of its own and passed it nowhere, so installing on another port silently
+# installed on 9770 - a flag that reports success and does nothing.
+param([int] $Port = 9770)
 
-if (Test-NetConnection -ComputerName 127.0.0.1 -Port $port -InformationLevel Quiet) {
+$ErrorActionPreference = 'SilentlyContinue'
+$port = $Port
+
+# A raw TcpClient connect, not Test-NetConnection: the cmdlet runs traceroute-ish probes and
+# takes seconds for a loopback question answerable in milliseconds, and this runs at every
+# login. Same semantics - connected means something is listening.
+function Test-Port([int]$p) {
+    $c = New-Object System.Net.Sockets.TcpClient
+    try   { $null = $c.ConnectAsync('127.0.0.1', $p).Wait(400); return $c.Connected }
+    catch { return $false }
+    finally { $c.Dispose() }
+}
+
+if (Test-Port $port) {
     $who = $null
     try { $who = (Invoke-RestMethod "http://127.0.0.1:$port/api/whoami" -TimeoutSec 3).app } catch {}
     if ($who -eq 'email-dashboard') {
