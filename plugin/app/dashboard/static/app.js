@@ -1566,13 +1566,18 @@ let openShowDone = false;
 // somebody gave up on the inbox and went to another channel to find its owner.
 
 async function loadScoreboard() {
+  const body = $("#scoreBody");
   let d;
   try {
     d = await get("/api/scoreboard");
   } catch (e) {
+    // NEVER LEAVE THE BOX EMPTY. Returning silently here left a titled panel with nothing
+    // in it, which reads as a broken feature rather than as a failed request - and the one
+    // thing this whole tool argues is that silence is not an answer.
+    body.className = "score-body unmeasured";
+    body.textContent = "could not load";
     return;
   }
-  const body = $("#scoreBody");
   const why = $("#scoreWhy");
 
   // NOT MEASURED IS NOT ZERO, and it must not LOOK like zero either. A big confident "0"
@@ -1582,7 +1587,9 @@ async function loadScoreboard() {
     body.className = "score-body unmeasured";
     body.textContent = "not measured yet";
     why.hidden = false;
-    why.onclick = () => alert(d.why_not);
+    why.onclick = () => alert(
+      "A “reach” is somebody giving up on your inbox and messaging you on "
+      + "another channel instead.\n\n" + d.why_not);
     return;
   }
 
@@ -1677,7 +1684,15 @@ function openRow(it) {
     (it.account ? `<span class="open-acct">${esc(it.account)}</span>` : "") +
     `<span class="open-age">${esc(age)}</span>` +
     (it.runs_seen > 1 ? `<span class="muted">seen in ${it.runs_seen} runs</span>` : "") +
-    (it.importance ? `<span class="badge">${esc(it.importance)}</span>` : "");
+    (it.importance ? `<span class="badge">${esc(it.importance)}</span>` : "") +
+    // Said out loud, because both can be true and the combination looks like a fault:
+    // acknowledging is "I have seen this" and it deliberately does not close an item.
+    // Without this the row is a demand about something the owner knows they dismissed.
+    (it.acknowledged
+      ? `<span class="badge acked" title="You acknowledged this. Acknowledging means you ` +
+        `have seen it, not that it is done - so it stays here until you close it.">` +
+        `acknowledged</span>`
+      : "");
   if (it.state !== "resolved") {
     // A thread-keyed item has no Message-ID, so the viewer cannot fetch it - mvOpen says so
     // in its own words rather than this row guessing. Either way the click is offered,
@@ -1689,6 +1704,7 @@ function openRow(it) {
         subject: it.subject, sender: it.sender, account: it.account,
         run_date: it.last_seen || it.first_seen,
         message_id: it.kind === "message" ? it.key : null,
+        open_item: true,
       }));
   }
   row.appendChild(main);
@@ -1965,9 +1981,18 @@ function mvPaintAck() {
   $("#mvAckThread").textContent = onThread
     ? "and everything like it - undo" : "and everything like it";
   $("#mvAckThread").classList.toggle("on", onThread);
+  // NOT TRUE OF AN ITEM THAT IS STILL OPEN. The old copy promised the message would stop
+  // being surfaced, while the Still-open panel went on surfacing it - which is how an
+  // acknowledged row sitting in a to-do list reads as the tool having lost track, rather
+  // than as the two different things they are.
+  const alsoOpen = mvCurrent && mvCurrent.open_item;
   $("#mvAckState").textContent = onThread
-    ? "every future notice of this is silenced"
-    : (onMsg ? "this one will stop being surfaced" : "");
+    ? (alsoOpen ? "silenced in the run reports - still on your open list until you close it"
+                : "every future notice of this is silenced")
+    : (onMsg
+        ? (alsoOpen ? "seen - but still on your open list until you close it"
+                    : "this one will stop being surfaced")
+        : "");
 }
 
 // ---------- The record: every run as one grid ----------
@@ -2092,9 +2117,16 @@ async function loadHeatmap() {
   // 1510 so you read 552" is 250px of text wrapped around a 144px chart, so the record
   // drew itself in a box half of which was empty - which reads as a failure to load. The
   // sentence still exists, as the tooltip, for anyone who wants it spelled out.
-  $("#heatSummary").textContent = `${t.runs} runs · ${t.messages} → ${t.kept}`;
-  $("#heatSummary").title =
-    `${t.runs} runs - I read ${t.messages} so you read ${t.kept}`;
+  // "runs" is only the right word when the grid is keyed on SWEEPS. By default it is keyed
+  // on when mail ARRIVED, so each square is a day the mailbox received something - and
+  // calling 57 arrival days "57 runs" overstates how often the tool has actually run.
+  const unit = data.by === "swept" ? "runs" : "days";
+  $("#heatSummary").textContent =
+    `${t.runs} ${unit} · ${t.messages} → ${t.kept}`;
+  $("#heatSummary").title = data.by === "swept"
+    ? `${t.runs} sweeps - I read ${t.messages} so you read ${t.kept}`
+    : `${t.runs} days on which mail arrived - I read ${t.messages} so you read ${t.kept}. `
+      + `Each square is the day mail ARRIVED, not the day it was swept.`;
   const used = [...new Set(days.map((d) => d.concept))].slice(0, 6);
   const open = days.filter((d) => (d.action_open == null ? d.action : d.action_open)).length;
   const done = days.filter((d) => d.action &&

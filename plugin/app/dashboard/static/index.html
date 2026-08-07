@@ -121,6 +121,10 @@
         <span>The record <span class="muted" id="heatSummary"></span></span>
         </h2>
       <div class="heat-wrap"><div id="heatmap"></div></div>
+      <!-- A LEGEND SEPARATED FROM ITS CHART IS A LIST OF WORDS. It was moved to the far
+           right of the band, where it stopped being a key to anything and became six
+           unexplained labels nobody could click. It reads the squares below it. -->
+      <div class="heat-legend" id="heatLegend"></div>
     </section>
 
 
@@ -132,11 +136,15 @@
       <section class="panel score" id="scorePanel">
         <div class="score-head">
           <span>🎯 Before they went elsewhere</span>
-          <button class="linkbtn" id="scoreWhy" type="button" hidden>why?</button>
+          <button class="linkbtn" id="scoreWhy" type="button" hidden>what is this?</button>
         </div>
-        <div class="score-body" id="scoreBody"></div>
+        <div class="score-body" id="scoreBody">loading…</div>
+        <!-- WITHOUT THIS LINE THE TILE IS A NUMBER AND A RIDDLE. Every other panel here is
+             self-evident from its title; this one measures something the tool has never
+             named before, so it has to say what it counts on the face of it. -->
+        <div class="score-what">how often someone gave up on your inbox and messaged you
+          somewhere else instead</div>
       </section>
-      <div class="heat-legend" id="heatLegend"></div>
     </aside>
   </div>
 

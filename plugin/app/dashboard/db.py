@@ -709,6 +709,34 @@ def open_item_key(msg):
     return "thread", "%s|%s" % (sender, subject)
 
 
+
+def _already_acknowledged(conn, msg):
+    """Has the owner already dismissed this message, or its whole series?
+
+    Queried by CONTENT - the account, sender and subject the ack recorded - so it works
+    whether the ack was stored under a Message-ID or under the row fallback, and needs no
+    key derivation of its own.
+    """
+    mid = (msg.get("message_id") or "").strip()
+    if mid and conn.execute(
+            "SELECT 1 FROM acks WHERE kind = 'message' AND key = ?", (mid,)).fetchone():
+        return True
+    account = (msg.get("account") or "").strip()
+    subject = (msg.get("subject") or "").strip()
+    if subject and conn.execute(
+            "SELECT 1 FROM acks WHERE kind = 'message' AND COALESCE(account,'') = ? "
+            "AND COALESCE(subject,'') = ?", (account, subject)).fetchone():
+        return True
+    # A thread ack silences the whole recurring series, so it covers this instance too.
+    shape = subject_shape(subject)
+    if not shape:
+        return False
+    for r in conn.execute("SELECT COALESCE(account,''), COALESCE(subject,'') "
+                          "FROM acks WHERE kind = 'thread'"):
+        if r[0].lower() == account.lower() and subject_shape(r[1]) == shape:
+            return True
+    return False
+
 def carry_open_items(conn, messages, run_date):
     """Open an item for anything that needs a person, and age the ones already open.
 
@@ -731,6 +759,18 @@ def carry_open_items(conn, messages, run_date):
             continue
         row = conn.execute("SELECT state, runs_seen FROM open_items WHERE key = ?",
                            (key,)).fetchone()
+        if row is None and _already_acknowledged(conn, m):
+            # ALREADY DISMISSED, SO NOT NEWLY OUTSTANDING. An acknowledgement means "I have
+            # seen this", and seeing is not doing - so an ack does NOT close an item that is
+            # already open, and that distinction is deliberate. But OPENING one for mail the
+            # owner has already dealt with in the dashboard is the tool arguing with its own
+            # record of their judgment, and it is how a standing list fills with things
+            # somebody already answered.
+            #
+            # Matched on what the acks table actually stored rather than by re-deriving a
+            # key here: db.py writes keys and server.py reads them, and a third derivation
+            # in between is exactly the drift that orphaned every ack once already.
+            continue
         if row is None:
             conn.execute(
                 "INSERT INTO open_items (key, kind, account, sender, subject, concept, "

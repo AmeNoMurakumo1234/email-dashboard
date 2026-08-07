@@ -79,14 +79,44 @@ def main(argv=None):
 
         found = candidates(conn, since)
         already = {r[0] for r in conn.execute("SELECT key FROM open_items")}
-        fresh = {k: v for k, v in found.items() if k not in already}
+
+        # ACKNOWLEDGED IS NOT OUTSTANDING, and skipping this was the whole point of the
+        # window being a safeguard rather than the safeguard. Run on a real store, this
+        # seeded the standing list with a message the owner had acknowledged two days
+        # earlier - so the panel opened demanding a decision about something they had
+        # already dealt with, and the tool was arguing with its own record of their
+        # judgment. A `--since` window cannot catch that: the item was recent, it was just
+        # already handled.
+        import server                                              # noqa: PLC0415
+        acked = server.acked_message_keys(conn)
+        acked_threads = {r[0] for r in conn.execute(
+            "SELECT key FROM acks WHERE kind = 'thread'")}
+        skipped_acked = 0
+        fresh = {}
+        for k, v in found.items():
+            if k in already:
+                continue
+            kind, m = v
+            ids = server.ack_identities("message", k if kind == "message" else None,
+                                        m.get("sender"), m.get("subject"),
+                                        m.get("account"))
+            thread = server.ack_key("thread", None, m.get("sender"), m.get("subject"),
+                                    m.get("account"))
+            if any(i in acked for i in ids) or thread in acked_threads:
+                skipped_acked += 1
+                continue
+            fresh[k] = v
 
         print("newest run in store : %s" % newest)
         print("window              : %s onward" % since)
         # Reported as three numbers, not one. "12 items" cannot distinguish a store that
         # was already tracking from one where the backfill found nothing to track.
         print("attention items     : %d in the window" % len(found))
-        print("already tracked     : %d" % (len(found) - len(fresh)))
+        print("already tracked     : %d" % (len(found) - len(fresh) - skipped_acked))
+        # Reported, not silently dropped: "3 skipped" and "3 not found" are different
+        # facts, and the owner should be able to see their own acknowledgements working.
+        print("already acknowledged: %d  <- you have seen these; not reopened"
+              % skipped_acked)
         print("would open          : %d" % len(fresh))
         if not fresh:
             print("\nnothing to add.")

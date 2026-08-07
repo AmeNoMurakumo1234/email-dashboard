@@ -250,5 +250,69 @@ class WhatTheListSaysAboutItself(unittest.TestCase):
                         "measuring the archive rather than the backlog")
 
 
+
+class AcknowledgedIsNotOutstanding(unittest.TestCase):
+    """Seen and done are different, and the tool must not confuse them EITHER WAY.
+
+    Found on a real store: the backfill seeded the standing list with a message the owner
+    had acknowledged two days earlier, so the panel opened demanding a decision about
+    something they had already dealt with - the tool arguing with its own record of their
+    judgment. A `--since` window cannot catch that; the item was recent, it was just
+    already handled.
+    """
+
+    def setUp(self):
+        self.s = Store()
+
+    def ack(self, **kw):
+        server.api_ack(self.s.conn, {}, dict(
+            {"kind": "message", "account": "owner@example.com",
+             "sender": "Boss <boss@example.com>",
+             "subject": "Please renew the lease"}, **kw))
+
+    def test_mail_acknowledged_first_never_opens_an_item(self):
+        self.ack(message_id="<a@x>")
+        opened, _ = self.s.ingest([msg(message_id="<a@x>")], "2026-08-01")
+        self.assertEqual(opened, 0)
+        self.assertEqual(self.s.items()["open"], 0)
+
+    def test_unacknowledged_mail_still_opens_one(self):
+        """The control. If acks suppressed everything the feature would be gone."""
+        opened, _ = self.s.ingest([msg(message_id="<b@x>")], "2026-08-01")
+        self.assertEqual(opened, 1)
+
+    def test_an_ack_stored_without_a_message_id_still_counts(self):
+        """A row acknowledged before it was linked - the fallback key case."""
+        self.ack()
+        opened, _ = self.s.ingest([msg(message_id="<a@x>")], "2026-08-01")
+        self.assertEqual(opened, 0)
+
+    def test_a_thread_ack_covers_this_instance(self):
+        server.api_ack(self.s.conn, {}, {
+            "kind": "thread", "account": "owner@example.com",
+            "sender": "Boss <boss@example.com>", "subject": "Statement #4471 ready"})
+        opened, _ = self.s.ingest([msg(subject="Re: Statement #9912 ready")], "2026-08-01")
+        self.assertEqual(opened, 0, "acknowledging the series covers each arrival of it")
+
+    def test_acknowledging_AFTERWARDS_does_not_close_an_open_item(self):
+        """The deliberate half. Seeing something is not doing it, so an item you
+        acknowledged on Monday and have not done is still open on Friday."""
+        self.s.ingest([msg(message_id="<c@x>")], "2026-08-01")
+        self.ack(message_id="<c@x>")
+        self.assertEqual(self.s.items()["open"], 1)
+
+    def test_but_the_panel_says_it_was_acknowledged(self):
+        """...and it has to SAY so, or the row reads as the tool having lost track of a
+        decision the owner knows they made. That is what it looked like on a real store."""
+        self.s.ingest([msg(message_id="<c@x>")], "2026-08-01")
+        self.ack(message_id="<c@x>")
+        row = self.s.items()["items"][0]
+        self.assertTrue(row["acknowledged"])
+
+    def test_an_untouched_item_is_not_marked_acknowledged(self):
+        self.s.ingest([msg(message_id="<d@x>")], "2026-08-01")
+        self.assertFalse(self.s.items()["items"][0]["acknowledged"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

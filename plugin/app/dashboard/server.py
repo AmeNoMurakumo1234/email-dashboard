@@ -2026,10 +2026,24 @@ def api_open_items(conn, q):
         "SELECT * FROM open_items %s ORDER BY "
         "CASE state WHEN 'open' THEN 0 ELSE 1 END, first_seen ASC" % where, args)]
     today = datetime.now().date()
+    # ACKNOWLEDGED AND STILL OPEN IS A REAL STATE, and it has to be visible or the panel
+    # looks broken. An ack says "I have seen this" and an open item says "this is not done";
+    # both can be true at once, and an owner looking at a row they know they acknowledged,
+    # with nothing on screen admitting it, reasonably concludes the tool has lost track.
+    acked_msg = acked_message_keys(conn)
+    acked_thread = {r["key"] for r in conn.execute(
+        "SELECT key FROM acks WHERE kind = 'thread'")}
     for r in rows:
         r["days_open"] = _days_between(r.get("first_seen"),
                                        r.get("resolved_at") or str(today))
         r["stale"] = bool(r["state"] == "open" and (r["days_open"] or 0) >= 14)
+        ids = ack_identities("message",
+                             r["key"] if r["kind"] == "message" else None,
+                             r.get("sender"), r.get("subject"), r.get("account"))
+        r["acknowledged"] = bool(
+            any(i in acked_msg for i in ids)
+            or ack_key("thread", None, r.get("sender"), r.get("subject"),
+                       r.get("account")) in acked_thread)
     n_open = sum(1 for r in rows if r["state"] == "open")
     ages = sorted(r["days_open"] for r in rows
                   if r["state"] == "open" and r["days_open"] is not None)
