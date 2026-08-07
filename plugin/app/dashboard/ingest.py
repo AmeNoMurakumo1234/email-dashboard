@@ -64,6 +64,14 @@ they are an error, like unlinked and unmapped rows.
 WHAT THE ACCEPTED KEYS MEAN, where the name does not say it. Listing a key is not the same
 as defining it, and a caller of a public seam is by definition not reading the internals:
 
+  disposition : one of trashed / would_trash / kept / surfaced / saved. `would_trash` means
+                JUDGED DISPOSABLE, NOT ACTED ON - the honest verdict of a read-only pass, and
+                the only correct value for an install with no fetcher to trash with. It was
+                missing, so read-only runs wrote `kept` (which in this tool means "the routine
+                decided to keep this") on everything, and the auto-trash guard's "not pure
+                noise" rule then refused every sender in the store, permanently, with sound
+                reasons. An unrecognised value warns, and refuses under --strict: previously
+                it landed in the store counting as neither binned nor kept.
   inbox_count : TOTAL MESSAGES IN THE MAILBOX. Not this sweep's result count, and not the
                 size of a filtered search. Send null if you cannot determine it - an absent
                 number is honest, a wrong one is not. `inbox_count >= fetched` and
@@ -165,6 +173,13 @@ def main():
     # are fixed: the contract is stated in the module docstring, and the arithmetic is checked
     # here. An impossible count is a STRONGER signal than anything else --strict already
     # refuses, because it cannot be a difference of opinion.
+    # AN UNRECOGNISED DISPOSITION. It was never validated, so a typo or a value from a newer
+    # contract landed in the store and counted as NEITHER binned nor kept - present in the
+    # row count, absent from every total that matters, and the totals still balanced against
+    # each other. Same silent-drop class as the unrecognised keys above, one level down.
+    bad_disp = sorted({(m.get("disposition") or "").strip() for m in messages
+                       if (m.get("disposition") or "").strip() not in db.DISPOSITIONS})
+
     impossible = []
     for a in accounts:
         who = a.get("account") or "(unnamed account)"
@@ -300,8 +315,14 @@ def main():
               "one means", file=sys.stderr)
     for line in impossible:
         print("IMPOSSIBLE %s" % line, file=sys.stderr)
+    if bad_disp:
+        print("UNKNOWN disposition(s): %s - valid values are %s. These rows count as "
+              "neither binned nor kept."
+              % (", ".join(repr(d) for d in bad_disp[:6]),
+                 ", ".join(sorted(db.DISPOSITIONS))), file=sys.stderr)
 
-    if args.strict and (unmapped or linked < len(messages) or ignored or impossible):
+    if args.strict and (unmapped or linked < len(messages) or ignored or impossible
+                        or bad_disp):
         # Refusing to write is the point: --strict exists for an intake, where discovering
         # this hours later means the source data is gone and it cannot be repaired.
         print("REFUSING to ingest (--strict): fix the labels, the missing Message-IDs, "
@@ -360,7 +381,7 @@ def main():
             # In the RESULT as well as on stderr, so a caller can see it without scraping -
             # the same courtesy `replaced` already extends for the wiped-day case.
             "discarded": {"accounts": len(accounts)} if accounts else {},
-            "impossible_accounts": impossible,
+            "impossible_accounts": impossible, "unknown_dispositions": bad_disp,
             "injection_flagged": flagged, "opened": opened_all,
             "open_items_suppressed": bool(args.no_open_items),
         }))
@@ -386,11 +407,14 @@ def main():
         "linked": linked, "mapped": mapped, "unmapped_labels": unmapped,
         "with_body": with_body, "with_link": with_link,
         "ignored_keys": sorted(ignored), "discarded": {},
-        "impossible_accounts": impossible,
+        "impossible_accounts": impossible, "unknown_dispositions": bad_disp,
         "injection_flagged": flagged,
         "steam_sales": len(steam_sales),
         "trashed": sum(1 for m in messages if m.get("disposition") == "trashed"),
-        "kept": sum(1 for m in messages if m.get("disposition") in ("kept", "surfaced")),
+        "would_trash": sum(1 for m in messages
+                           if m.get("disposition") == "would_trash"),
+        "kept": sum(1 for m in messages
+                    if m.get("disposition") in db.DELIBERATELY_KEPT),
         # CARRIED FORWARD. A brief is a delta, so a task assigned three weeks ago used to
         # appear in exactly one brief and then vanish. `opened` is what this run added to
         # the standing list; `still_open_seen` is how many already-open items this run saw

@@ -1010,6 +1010,37 @@ async function openSender(key) {
       `${esc(r.why || "")}</div>`;
   }
 
+  // A NOTIFICATION ADDRESS IS NOT ONE THING, and the whole-sender verdict above says so
+  // correctly and uselessly. One tracker address carries status noise, bot chatter, and the
+  // handful of messages where a person named you - and "not pure noise" is true of the
+  // address while being false of most of its mail. Sender-scoped rules could therefore never
+  // fire on exactly the senders worth ruling on: the volume that earns a rule is the volume
+  // that guarantees the sender is mixed.
+  //
+  // So the breakdown is the feature, not a detail of it. A button that never lights up and
+  // never says why is indistinguishable from one that is broken.
+  const slices = (s.rule_slices || []).filter((x) => x.n > 0);
+  if (slices.length > 1) {
+    const canRule = slices.filter((x) => x.eligible && !x.already_ruled).length;
+    ruleBox += `<div class="rule-slices"><h4>By label` +
+      `<span class="muted">${canRule ? `${canRule} of ${slices.length} could be ruled on` :
+        "none of these can be ruled on yet"}</span></h4>` +
+      slices.map((sl, i) =>
+        `<div class="rule-slice${sl.eligible && !sl.already_ruled ? " go" : ""}">` +
+        `<span class="rs-lab">${esc(sl.category)}</span>` +
+        `<span class="rs-n">${sl.n}</span>` +
+        (sl.already_ruled
+          ? `<button class="btn rs-btn" data-off="${i}">lift</button>`
+          : sl.eligible
+            ? `<button class="btn primary rs-btn" data-on="${i}">always trash this label` +
+              `</button>`
+            : `<span class="rs-why">${esc(sl.why || "")}</span>`) +
+        "</div>").join("") +
+      `<div class="muted rs-note">A label rule bins only mail the triage files under that ` +
+      `label. It is only as good as the label, which is assigned to future mail by the ` +
+      `same triage - so it is offered, never applied on its own.</div></div>`;
+  }
+
   const cmax = Math.max(1, ...(s.by_concept || []).map((c) => c.n));
   $("#amBody").innerHTML =
     `<div class="kpis am-kpis">${kpi(s.total, "messages")}` +
@@ -1074,15 +1105,16 @@ async function openSender(key) {
   });
   $("#amBody").appendChild(seeAll);
 
-  const setRule = async (on) => {
-    const btn = $(on ? "#ruleAdd" : "#ruleLift");
+  const setRule = async (on, btn, category) => {
     btn.disabled = true;
     btn.textContent = on ? "writing the rule..." : "lifting...";
     try {
       const res = await fetch("/api/sender-rule", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Dashboard": "1" },
-        body: JSON.stringify({ key, on, label: key }),
+        // The category rides along; the server re-derives the entitlement for that exact
+        // slice and refuses whatever this page happens to claim about it.
+        body: JSON.stringify({ key, on, label: key, category: category || null }),
       }).then((x) => x.json());
       if (!res.ok) throw new Error(res.error || "refused");
       openSender(key);                     // re-render from the server's new truth
@@ -1091,8 +1123,17 @@ async function openSender(key) {
       btn.textContent = "could not: " + e.message;
     }
   };
-  if ($("#ruleAdd")) $("#ruleAdd").addEventListener("click", () => setRule(true));
-  if ($("#ruleLift")) $("#ruleLift").addEventListener("click", () => setRule(false));
+  if ($("#ruleAdd")) {
+    $("#ruleAdd").addEventListener("click", (e) => setRule(true, e.target));
+  }
+  if ($("#ruleLift")) {
+    $("#ruleLift").addEventListener("click", (e) => setRule(false, e.target));
+  }
+  $("#amBody").querySelectorAll(".rs-btn").forEach((b) => {
+    const on = b.dataset.on !== undefined;
+    const sl = slices[Number(on ? b.dataset.on : b.dataset.off)];
+    b.addEventListener("click", () => setRule(on, b, sl.category));
+  });
 }
 
 // ---------- KPI drill-downs ----------

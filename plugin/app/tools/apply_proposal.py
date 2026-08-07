@@ -41,6 +41,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "dashboard"))
 from server import (_sender_key, load_protected, protected_hit)          # noqa: E402
+import db  # noqa: E402
 import untrusted  # noqa: E402
 
 DB = ROOT / "dashboard" / "email_dashboard.db"
@@ -71,9 +72,14 @@ def _history(conn):
             continue
         h = hist.setdefault(key, {"kept": 0, "trashed": 0, "attention": False,
                                   "concepts": set()})
-        if disposition == "trashed":
+        # An ELSE branch decided what counted as kept, so every disposition that was not the
+        # single string "trashed" became evidence that the sender was worth keeping. On a
+        # read-only or connector install that is every row, because there was no way to
+        # record "I would bin this and cannot" - so the guard refused every sender forever,
+        # and did it with sound-looking reasons. Judged-disposable is now its own thing.
+        if disposition in db.DISPOSABLE:
             h["trashed"] += 1
-        else:
+        elif disposition in db.DELIBERATELY_KEPT:
             h["kept"] += 1
         if importance in ATTENTION:
             h["attention"] = True
@@ -130,8 +136,12 @@ def main():
 
     with open(args.proposal, encoding="utf-8-sig") as f:
         run = json.load(f)
+    # DISPOSABLE, not just "trashed". A read-only triage - which is what the skill mandates,
+    # and the only thing a connector install can do - proposes `would_trash`. Reading only
+    # `trashed` would mean the applier found nothing to consider in precisely the proposals
+    # this propose/dispose split exists to serve.
     messages = [m for m in (run.get("messages") or [])
-                if (m.get("disposition") or "") == "trashed"
+                if (m.get("disposition") or "") in db.DISPOSABLE
                 and (not args.account
                      or (m.get("account") or "").lower() == args.account.lower())]
 
@@ -160,7 +170,33 @@ def main():
           f"{len(prot['concepts'])} protected category(ies)")
     print(f"injection     : {flagged} of {len(messages)} carry signals "
           f"(labelled here, not trusted from the caller)")
-    print(f"history       : {len(hist)} sender(s) with recorded messages\n")
+    print(f"history       : {len(hist)} sender(s) with recorded messages")
+
+    # IS THIS GUARD CAPABLE OF SAYING YES?
+    #
+    # `REFUSED 6 of 6` with stacked, specific, correct reasons is indistinguishable from a
+    # healthy guard doing its job - and on a store where no sender has ever had a message
+    # judged disposable, the "not pure noise" rule refuses EVERY sender by construction. Not
+    # because anything is protected. Because there is no evidence of noise for anything.
+    #
+    # That is the state a fresh install is in, and the state a read-only or connector install
+    # stays in until the routine starts recording would_trash. A guard that cannot currently
+    # pass anything should say so, rather than presenting as a guard that happens to refuse -
+    # the same courtesy `doctor` extends with NOT CONFIGURED and the scoreboard extends with
+    # "not measured is not zero".
+    with_noise = sum(1 for h in hist.values() if h["trashed"])
+    if hist and not with_noise:
+        print("\nNOTE: no sender in this store has a single message recorded as trashed or "
+              "would_trash,")
+        print("      so the \"not pure noise\" rule will refuse every sender no matter what "
+              "you propose.")
+        print("      This is a fresh or read-only install, NOT a set of protected senders. A "
+              "read-only")
+        print("      pass can record `would_trash` - judged disposable, not acted on - which "
+              "gives this")
+        print("      guard real evidence to weigh instead of the absence of an impossible "
+              "action.")
+    print()
 
     allowed, refused = [], []
     for m in messages:

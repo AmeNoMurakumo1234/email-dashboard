@@ -64,6 +64,18 @@ So:
 
    Write the run JSON with, for every message: `disposition`, `category`, `reason`,
    `importance`, `message_id`, and the **real subject**.
+   - **`disposition` in a read-only phase is `would_trash`, not `kept`.** This step has no
+     power to act, so `trashed` would be a lie about what happened to the mail — but `kept`
+     in this tool's vocabulary means *the routine decided to keep this*, a positive judgment
+     about the sender, and the auto-trash guard weighs it as one. Writing `kept` on
+     everything a read-only pass sees leaves the guard unable to clear any sender at all,
+     permanently, while still refusing with sound reasons. `would_trash` says what you
+     actually concluded: **judged disposable, not acted on.** Use `kept` / `surfaced` /
+     `saved` only where you mean it.
+   - Send `body_text` (and `web_link` if the source has one) whenever you have them. They
+     are what make the sandboxed viewer, the image blocking and the tracking-host report
+     reachable for that row; without them a message is recorded but cannot be read.
+     `ingest.py` reports `with_body` and `with_link` so you can see whether they landed.
    - `message_id` is what lets the message be reopened later. A UID will not do: it is
      per-folder and is reassigned the moment a message moves, so any UID captured before a
      trash step is already stale.
@@ -85,6 +97,11 @@ So:
    protected list, a protected category, anything this run flagged for attention, anything
    carrying injection signals, and any sender with kept mail on record — and it refuses
    *everything* if the guard is unconfigured.
+
+   If it reports that **no sender in the store has any disposable mail**, the guard cannot
+   currently clear anything — not because senders are protected, but because there is no
+   evidence of noise for it to weigh. That is what a fresh install looks like, and what a
+   read-only install stays like until it starts recording `would_trash`.
 
    **Read the refusals.** They are the interesting output. A refusal means the proposal and
    the stored record disagreed, and the record won; that is worth understanding rather than

@@ -44,9 +44,14 @@ def candidates(conn, since):
     rows = conn.execute(
         "SELECT sender, subject, account, category, importance, message_id, msg_date, "
         "COALESCE(msg_day, run_date) AS day FROM messages "
-        "WHERE COALESCE(msg_day, run_date) >= ? AND disposition != 'trashed' "
+        # DELIBERATELY_KEPT, not `!= 'trashed'`. The negative spelling silently readmits any
+        # disposition added later - which is exactly what happened to would_trash, whose whole
+        # meaning is "the triage judged this disposable". True of the string, false of the
+        # meaning, and the backfill would have seeded the standing list with binned noise.
+        "WHERE COALESCE(msg_day, run_date) >= ? AND disposition IN (%s) "
         "AND importance IN (%s) ORDER BY day ASC"
-        % ",".join("?" * len(db.ATTENTION)), (since,) + db.ATTENTION).fetchall()
+        % (",".join("?" * len(db.DELIBERATELY_KEPT)), ",".join("?" * len(db.ATTENTION))),
+        (since,) + tuple(sorted(db.DELIBERATELY_KEPT)) + db.ATTENTION).fetchall()
     seen = {}
     for r in rows:
         m = dict(r)

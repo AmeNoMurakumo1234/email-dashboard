@@ -464,6 +464,25 @@ rect.hm-day:hover { stroke: #fff; stroke-width: 1.5; }
 .btn.primary { background: #16a34a; border-color: #16a34a; color: #fff; }
 .btn.primary:hover { background: #15803d; }
 
+/* ---- the per-label breakdown, which is what makes a rule expressible at all ---- */
+.rule-slices { margin: 0 0 14px; }
+.rule-slices h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+                  color: var(--muted); margin: 0 0 6px; display: flex;
+                  justify-content: space-between; gap: 10px; font-weight: 600; }
+.rule-slices h4 .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.rule-slice { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 2fr);
+              align-items: center; gap: 10px; padding: 6px 9px; font-size: 12px;
+              border: 1px solid var(--border); border-radius: 7px; margin-bottom: 5px;
+              background: var(--panel-2); }
+.rule-slice.go { background: #16211a; border-color: #4ade8055; }
+.rule-slice .rs-lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule-slice .rs-n { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The refusal wraps rather than truncating. A guard's reason is the whole point of the
+   row - a clipped "protected categ..." is a button that still will not say why. */
+.rule-slice .rs-why { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.rule-slice .btn { display: block; margin: 0; justify-self: end; white-space: nowrap; }
+.rs-note { font-size: 11px; line-height: 1.5; margin-top: 7px; }
+
 /* ---- KPI drill-downs ---- */
 .kpi.clickable { cursor: pointer; transition: border-color .12s; }
 .kpi.clickable:hover { border-color: #4b7bd6; }

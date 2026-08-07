@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS messages (
     subject      TEXT,
     msg_date     TEXT,                          -- exactly as the run wrote it (ISO, RFC 2822, or absent)
     msg_day      TEXT,                          -- derived YYYY-MM-DD; what the calendar is allowed to trust
-    disposition  TEXT NOT NULL,                 -- trashed / surfaced / kept
+    disposition  TEXT NOT NULL,                 -- trashed / would_trash / surfaced / kept / saved
+                                                --   see DISPOSABLE / DELIBERATELY_KEPT below
     category     TEXT,                          -- the raw label as the run wrote it
     concept      TEXT,                          -- canonical concept (concepts.py); 'unmapped' if unknown
     reason       TEXT,
@@ -817,8 +818,11 @@ def carry_open_items(conn, messages, run_date):
     for m in messages:
         if (m.get("importance") or "") not in ATTENTION:
             continue
-        if m.get("disposition") == "trashed":
-            continue          # binned by the triage that just ran; not outstanding
+        if m.get("disposition") in DISPOSABLE:
+            # Binned by the triage that just ran, or judged bin-worthy by a run with no
+            # power to act - either way the triage said it is not outstanding, and whether
+            # the mailbox obeyed is a separate question from what was decided.
+            continue
         kind, key = open_item_key(m)
         if not key:
             continue
@@ -868,6 +872,37 @@ def carry_open_items(conn, messages, run_date):
 #
 # Defined here rather than in ingest.py because this is where the fields are actually
 # consumed; a contract that lives away from its implementation is one that drifts.
+# ---------------------------------------------------------------------------------------
+# THE DISPOSITION VOCABULARY, in one place, because it is read in seventeen.
+#
+# `would_trash` was added because the honest verdict of a READ-ONLY triage - "this is bot
+# noise, I would bin it, I have no power to" - was not expressible. The valid set was
+# trashed / surfaced / kept / saved, and writing `trashed` would have been a lie about what
+# happened to the mail. So `kept` got written instead, and `kept` in this tool's vocabulary
+# means THE ROUTINE DECIDED TO KEEP THIS: a positive judgment about the sender.
+#
+# The consequence was that the read-only discipline this project insists on - and which a
+# connector install has no way to escape, because it has no fetcher to act with - poisoned
+# the auto-trash guard on day one, permanently. The "not pure noise" rule refuses any sender
+# with kept mail, so on such an install NO sender could ever clear it. Not because anything
+# was protected: because there was no correct value to write.
+#
+# The distinction that matters is between what was JUDGED and what was DONE:
+#
+#   DISPOSABLE          judged to be noise. `trashed` was acted on, `would_trash` was not.
+#                       Both are evidence about the sender; only one is a claim about the
+#                       mailbox's current contents.
+#   DELIBERATELY_KEPT   a positive decision to keep. This is what the guard weighs against
+#                       a rule, and nothing may land here by default.
+#
+# Read these sets rather than comparing to a literal. `disposition != 'trashed'` was the
+# spelling that made would_trash mail count as kept - true of the string, false of the
+# meaning.
+DISPOSABLE = frozenset(("trashed", "would_trash"))
+DELIBERATELY_KEPT = frozenset(("kept", "surfaced", "saved"))
+DISPOSITIONS = DISPOSABLE | DELIBERATELY_KEPT
+
+
 MESSAGE_FIELDS = frozenset((
     "account", "sender", "subject", "msg_date", "disposition", "category", "reason",
     "importance", "message_id", "injection_signals", "to", "cc", "body_text", "web_link",
@@ -959,8 +994,10 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
         elif row and append:
             replaced = 0            # nothing was removed; the day grew
 
+        # The run row counts what was DONE, so `trashed` stays actual removals - a summary
+        # claiming it binned mail it had no power to bin would be the same lie in reverse.
         trashed = sum(1 for m in messages if m.get("disposition") == "trashed")
-        kept = sum(1 for m in messages if m.get("disposition") in ("kept", "surfaced"))
+        kept = sum(1 for m in messages if m.get("disposition") in DELIBERATELY_KEPT)
         otp = sum(1 for m in messages if (m.get("category") or "").lower() == "otp")
         fetched = sum(int(a.get("fetched") or 0) for a in accounts) or len(messages)
 

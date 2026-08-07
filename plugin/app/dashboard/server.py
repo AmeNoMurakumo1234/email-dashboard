@@ -110,8 +110,8 @@ def api_run(conn, q):
     # which is the other half of the drowning problem.
     annotate_acks(conn, messages)
 
-    surfaced = [m for m in messages if m["disposition"] in ("surfaced", "kept")]
-    trashed = [m for m in messages if m["disposition"] == "trashed"]
+    surfaced = [m for m in messages if m["disposition"] in db.DELIBERATELY_KEPT]
+    trashed = [m for m in messages if m["disposition"] in db.DISPOSABLE]
     return {"run_date": date,
         "accounts_as_of": accounts_as_of, "run": run, "accounts": accounts,
             "surfaced": surfaced, "trashed": trashed,
@@ -1176,41 +1176,77 @@ def protected_hit(prot, text):
     return any(n in t for n in prot["names"])
 
 
-def sender_rule_verdict(conn, key):
-    """Is this sender safe to lock to auto-trash, and is the evidence strong enough?
+def sender_rule_verdict(conn, key, category=None):
+    """Is this sender - or this slice of it - safe to lock to auto-trash?
 
     Judged HERE, from the store, never from what the browser asserts. A click is a request;
     the entitlement to change standing policy has to be re-derived server-side or the guard
     is only as good as the page that called it.
+
+    WHY A SLICE. Rules were keyed on SENDER, and mail does not arrive that way. Simulated
+    across every sender in a real work store, with the disposition data corrected, the number
+    of senders eligible for an auto-trash rule was ZERO - not few, none. The reason is
+    structural rather than incidental: the highest-volume senders are notification services
+    whose entire job is to multiplex many kinds of message through one address, so the volume
+    that makes a sender worth ruling on is the same volume that guarantees the sender is
+    mixed. One tracker address carried dozens of binnable status mails AND the handful of
+    "a person named you" messages that were the whole basis of the standing work list.
+
+    The guard was right to refuse it. `this sender is pure noise` is a FALSE STATEMENT about
+    that address, and no amount of fixing the guard should ever make it pass. The rule engine
+    was behaving correctly and was useless, because the only thing it could express was not
+    true of any sender worth expressing it about. `rule_min_messages` then sealed it: below
+    the threshold there is not enough evidence, and above it the sender is mixed.
+
+    So a rule may now name (sender, category), which is a statement that can be true. Every
+    check below is unchanged and simply runs against the slice: NARROWER evidence, not weaker
+    evidence. A slice with any deliberately-kept mail is still refused, and the protected-name
+    check deliberately stays at the whole-sender level - if a person is protected, no slice of
+    their mail may be binned.
+
+    The triage layer already separates this correctly - category, concept, importance and
+    addressed_directly are all resolved per message. Only the rule layer collapsed them back
+    onto one sender.
     """
     prot = load_protected()
     if not prot["configured"]:
         # No guard list, no rule writing. Refusing is the only safe reading of a missing
         # protection file; the alternative is a button that can silence anyone.
-        return {"eligible": False, "configured": False,
+        return {"eligible": False, "configured": False, "category": category,
                 "why": "no protected-sender config (config/protected.local.json): "
                        "refusing to write any auto-trash rule. " + prot["why"]}
 
     rows_ = rows(conn.execute(
-        "SELECT sender, disposition, COALESCE(concept,'') concept, run_date, importance "
+        "SELECT sender, disposition, COALESCE(concept,'') concept, run_date, importance, "
+        "COALESCE(category,'') category "
         "FROM messages WHERE sender IS NOT NULL AND sender != ''"))
-    mine = [r for r in rows_ if _sender_key(r["sender"]) == key]
+    all_mine = [r for r in rows_ if _sender_key(r["sender"]) == key]
+    if not all_mine:
+        return {"eligible": False, "category": category,
+                "why": "no messages recorded for that sender"}
+    category = (category or "").strip() or None
+    mine = ([r for r in all_mine if r["category"] == category] if category else all_mine)
     if not mine:
-        return {"eligible": False, "why": "no messages recorded for that sender"}
+        return {"eligible": False, "category": category,
+                "why": "no messages recorded for that sender under %r" % category}
+
     total = len(mine)
-    binned = sum(1 for r in mine if r["disposition"] == "trashed")
+    binned = sum(1 for r in mine if r["disposition"] in db.DISPOSABLE)
+    kept = sum(1 for r in mine if r["disposition"] in db.DELIBERATELY_KEPT)
     runs_ = len({r["run_date"] for r in mine})
     concepts_seen = {r["concept"] for r in mine if r["concept"]}
-    variants = sorted({r["sender"] for r in mine})
+    variants = sorted({r["sender"] for r in all_mine})
 
     reasons = []
-    if binned != total:
-        reasons.append(f"kept or surfaced {total - binned} of {total} - not pure noise")
+    if kept:
+        reasons.append(f"kept or surfaced {kept} of {total} - not pure noise")
     if total < prot["min_messages"]:
         reasons.append(f"only {total} messages; {prot['min_messages']} needed")
     hit = concepts_seen & prot["concepts"]
     if hit:
         reasons.append("protected category: " + ", ".join(sorted(hit)))
+    # WHOLE-SENDER, not the slice. A protected person does not become binnable one label at
+    # a time, and this is the check where narrowing would be weakening rather than sharpening.
     if protected_hit(prot, key) or any(protected_hit(prot, v) for v in variants):
         reasons.append("on your protected-sender list")
     if any((r["importance"] or "") in ("action-needed", "family", "security", "financial")
@@ -1218,8 +1254,33 @@ def sender_rule_verdict(conn, key):
         reasons.append("has been flagged as needing attention before")
 
     return {"eligible": not reasons, "why": "; ".join(reasons) or "",
-            "total": total, "binned": binned, "runs": runs_,
+            "category": category, "scope": "category" if category else "sender",
+            "total": total, "binned": binned, "kept": kept, "runs": runs_,
+            "sender_total": len(all_mine),
             "variants": variants, "concepts": sorted(concepts_seen)}
+
+
+def sender_rule_slices(conn, key):
+    """Every category this sender writes under, each with its own verdict.
+
+    This is what makes the narrower scope usable rather than merely possible: the panel can
+    show that one address is mostly status noise (eligible), partly bot chatter (the owner's
+    call) and partly "a person named you" (protected, and refused for a stated reason) -
+    rather than one button that never lights up and never says why.
+    """
+    rows_ = rows(conn.execute(
+        "SELECT sender, COALESCE(category,'') category FROM messages "
+        "WHERE sender IS NOT NULL AND sender != ''"))
+    cats = collections.Counter(r["category"] for r in rows_
+                               if _sender_key(r["sender"]) == key and r["category"])
+    out = []
+    for cat, n in cats.most_common():
+        v = sender_rule_verdict(conn, key, cat)
+        out.append({"category": cat, "n": n, "eligible": v.get("eligible", False),
+                    "why": v.get("why", ""), "binned": v.get("binned", 0),
+                    "kept": v.get("kept", 0),
+                    "already_ruled": _already_ruled(key, cat)})
+    return out
 
 
 def api_sender(conn, q):
@@ -1261,8 +1322,8 @@ def api_sender(conn, q):
     return {
         "key": key, "found": True,
         "total": len(mine),
-        "binned": sum(1 for r in mine if r["disposition"] == "trashed"),
-        "kept": sum(1 for r in mine if r["disposition"] != "trashed"),
+        "binned": sum(1 for r in mine if r["disposition"] in db.DISPOSABLE),
+        "kept": sum(1 for r in mine if r["disposition"] in db.DELIBERATELY_KEPT),
         "runs": len(seen_days), "first_seen": min(seen_days), "last_seen": max(seen_days),
         "silence": silence, "worst_gap": max(gaps) if gaps else None, "quiet": quiet,
         "variants": sorted({r["sender"] for r in mine}),
@@ -1274,6 +1335,11 @@ def api_sender(conn, q):
         "activity": activity,
         "recent": recent,
         "rule": sender_rule_verdict(conn, key),
+        # WHY THE BUTTON IS DARK, per slice. A whole-sender verdict on a notification address
+        # is always "not pure noise" and always correct, and tells the owner nothing they can
+        # act on. The breakdown says which part of this sender's mail could be ruled on and
+        # which part is protected, which is the difference between a feature and a button.
+        "rule_slices": sender_rule_slices(conn, key),
         "already_ruled": _already_ruled(key),
     }
 
@@ -1297,12 +1363,29 @@ def _write_rules(lines, nl):
         f.write(nl.join(lines) + nl)
 
 
-def _already_ruled(key):
+def _rule_marker(key, category=None):
+    """The marker a dashboard-written rule carries.
+
+    A bare `key` is the whole-sender form and stays exactly as it was, so rules written
+    before scoped rules existed keep working and keep being liftable. A scoped rule appends
+    the category. Two forms, one prefix - the alternative (re-keying the old ones) would have
+    orphaned every existing rule from the button that lifts it, which is the acknowledgement
+    defect all over again.
+    """
+    cat = (category or "").strip()
+    return "<!-- dashboard-rule:%s%s -->" % (key, ("|" + cat) if cat else "")
+
+
+def _already_ruled(key, category=None):
     try:
         raw, _ = _read_rules()
     except OSError:
         return False
-    return ("<!-- dashboard-rule:%s -->" % key) in raw
+    if _rule_marker(key, category) in raw:
+        return True
+    # A whole-sender rule already covers every slice of that sender. Reporting a slice as
+    # unruled while the sender is locked would invite a second, redundant rule.
+    return category is not None and _rule_marker(key) in raw
 
 
 def api_sender_rule(conn, q, body=None):
@@ -1320,13 +1403,14 @@ def api_sender_rule(conn, q, body=None):
     """
     body = body or {}
     key = (body.get("key") or "").strip().lower()
+    category = (body.get("category") or "").strip() or None
     if not key:
         return {"ok": False, "error": "key is required"}
     # Eligibility FIRST, so the refusal names the reason that matters. Reading the rules
     # file first meant a fresh install refused with "cannot read the rules file" when the
     # real and more important answer was "you have not told me who is protected yet" -
     # a true refusal for a misleading reason is still a bad error message.
-    verdict = sender_rule_verdict(conn, key)
+    verdict = sender_rule_verdict(conn, key, category)
     if body.get("on") is not False and not verdict["eligible"]:
         return {"ok": False, "error": "not eligible: " + verdict["why"], "verdict": verdict}
 
@@ -1336,26 +1420,43 @@ def api_sender_rule(conn, q, body=None):
         return {"ok": False,
                 "error": "no rules file yet (%s). Copy rules-and-policies.example.md to "
                          "rules-and-policies.md to start one." % type(e).__name__}
-    marker = "<!-- dashboard-rule:%s -->" % key
+    marker = _rule_marker(key, category)
 
     if body.get("on") is False:
         if marker not in text:
-            return {"ok": False, "error": "no dashboard-written rule for that sender"}
+            return {"ok": False, "error": "no dashboard-written rule for that sender"
+                                          + (" under %r" % category if category else "")}
         kept = [ln for ln in text.splitlines() if marker not in ln]
         _write_rules(kept, nl)
-        return {"ok": True, "key": key, "ruled": False}
+        return {"ok": True, "key": key, "category": category, "ruled": False}
 
     if not verdict["eligible"]:
         return {"ok": False, "error": "not eligible: " + verdict["why"], "verdict": verdict}
     if marker in text:
-        return {"ok": True, "key": key, "ruled": True, "note": "already ruled"}
+        return {"ok": True, "key": key, "category": category, "ruled": True,
+                "note": "already ruled"}
 
     today = db.now_iso()[:10]
     label = (body.get("label") or key)[:60]
-    row = ("| %s (auto-trash, confirmed from the dashboard) | %s | Binned %d of %d "
-           "messages across %d runs with none ever kept - locked on that evidence. "
-           "Lift it from the sender panel. %s |"
-           % (label, today, verdict["binned"], verdict["total"], verdict["runs"], marker))
+    if category:
+        # The scope is IN THE ROW, not only in the marker. A rules file is read by people,
+        # and a row saying "auto-trash this sender" when the rule covers one label of their
+        # mail is the kind of quiet overstatement that gets a rule lifted in a panic later.
+        # The caveat is stated too: a scoped rule is only as good as the label, and the label
+        # is assigned by the triager on mail that has not arrived yet.
+        row = ("| %s - only mail labelled `%s` (auto-trash, confirmed from the dashboard) "
+               "| %s | %d of %d messages under this label binned, none ever kept, across %d "
+               "runs - locked on that evidence. Other mail from this sender is UNAFFECTED "
+               "(%d messages in total). Depends on the label being assigned correctly to "
+               "future mail. Lift it from the sender panel. %s |"
+               % (label, category, today, verdict["binned"], verdict["total"],
+                  verdict["runs"], verdict["sender_total"], marker))
+    else:
+        row = ("| %s (auto-trash, confirmed from the dashboard) | %s | Binned %d of %d "
+               "messages across %d runs with none ever kept - locked on that evidence. "
+               "Lift it from the sender panel. %s |"
+               % (label, today, verdict["binned"], verdict["total"], verdict["runs"],
+                  marker))
 
     lines = text.splitlines()
     # Append to the Confirmed junk senders table, immediately after its last row.
@@ -1599,7 +1700,7 @@ def api_repeats(conn, q):
             "accelerating": accelerating,
             "concept": concept, "concept_key": concepts.key_of(concept),
             "weight": weight,
-            "still_open": last["disposition"] != "trashed",
+            "still_open": last["disposition"] in db.DELIBERATELY_KEPT,
             "dispositions": sorted({r["disposition"] for r in rs}),
         })
 

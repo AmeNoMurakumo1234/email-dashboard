@@ -33,6 +33,7 @@ import os
 import re
 
 import concepts
+import db
 
 # WHAT BEING WRONG COSTS, as a hard floor above the weights. A weight is a judgement about
 # how much a question is worth asking; STAKES is a statement about what happens if the owner
@@ -180,7 +181,7 @@ def generate(conn, rules_path=None, protected=None, limit=6):
                 p["direct_unread"].append(r["subject"])
         # A personal ask from an automated sender, regardless of recipient data - this is
         # the signal that survives on an install with no recipient information at all.
-        if r["disposition"] == "trashed" and names_a_person(
+        if r["disposition"] in db.DISPOSABLE and names_a_person(
                 r["subject"], None, r["addressed_directly"]):
             p.setdefault("asks", []).append(r["subject"])
 
@@ -206,7 +207,12 @@ def generate(conn, rules_path=None, protected=None, limit=6):
             continue
         a = at_risk[r["category"]]
         a["n"] += 1
-        if r["disposition"] == "trashed":
+        # DISPOSABLE, not just trashed. This question exists to catch a category that is
+        # being disposed of while carrying assignments to the owner - and on a read-only
+        # install the disposal is a would_trash, so keying on `trashed` alone would silence
+        # the one question here whose wrong answer destroys work, on exactly the installs
+        # that cannot act and therefore rely most on being asked.
+        if r["disposition"] in db.DISPOSABLE:
             a["binned"] += 1
             if len(a["hits"]) < 3:
                 a["hits"].append(r["subject"])

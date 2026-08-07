@@ -209,6 +209,50 @@ try:
           "either the kept message leaked in, or the applier never got that far")
     check("exits 1 when anything was refused (not from a crash)",
           r.returncode == 1 and "Traceback" not in out, f"{r.returncode}: {out[-200:]}")
+
+    # (c) THE GUARD THAT CANNOT EVER PASS. `REFUSED n of n` with stacked, specific, correct
+    #     reasons is indistinguishable from a healthy guard - and on a store where nothing
+    #     has ever been judged disposable, the "not pure noise" rule refuses EVERY sender by
+    #     construction, not because anything is protected. That is the state a read-only or
+    #     connector install lives in permanently, having no fetcher to trash with.
+    check("a store with disposable mail does NOT claim the guard is closed",
+          "will refuse every sender" not in out,
+          "the control: this store has a trashed row, so the note must stay quiet")
+
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE messages SET disposition = 'kept'")     # what read-only produces
+    conn.commit()
+    conn.close()
+    r = run_applier()
+    out = (r.stdout or "") + (r.stderr or "")
+    check("a guard nothing can pass says so", "will refuse every sender" in out,
+          out[-400:])
+    check("...and names the cause rather than the symptom",
+          "read-only install" in out and "would_trash" in out, out[-400:])
+
+    # (d) A READ-ONLY PROPOSAL IS CONSIDERED AT ALL. The applier filtered on the literal
+    #     "trashed", so a proposal from the only kind of pass a connector install can run
+    #     contained nothing it would look at - the propose/dispose split failing to serve
+    #     precisely the case it exists for.
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE messages SET disposition = 'would_trash' "
+                 "WHERE sender LIKE 'Loud Promos%'")
+    conn.commit()
+    conn.close()
+    ro = dict(proposal)
+    ro["messages"] = [dict(m, disposition="would_trash") for m in proposal["messages"]
+                      if m["disposition"] == "trashed"]
+    rofile = Path(tmp) / "readonly.json"
+    rofile.write_text(json.dumps(ro), encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, str(Path(tmp) / "tools" / "apply_proposal.py"), str(rofile)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    out = (r.stdout or "") + (r.stderr or "")
+    check("a would_trash proposal is considered", "proposed trash: 5" in out, out[-300:])
+    check("...and the same message clears that cleared before",
+          "CLEARED 1 of 5" in out, [l for l in out.splitlines() if "CLEARED" in l])
+    check("...while the injection-shaped message from that sender is still refused",
+          "injection signals" in out, out[-400:])
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 

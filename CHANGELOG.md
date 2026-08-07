@@ -1,5 +1,92 @@
 # Changelog
 
+## 0.14.0 — the guard can say yes
+
+Two reported defects that turned out to be one problem. The auto-trash guard was refusing
+everything, on every install checked, with reasons that were individually correct — and
+`REFUSED 6 of 6` with stacked, specific, sound reasoning is indistinguishable from a healthy
+guard doing its job.
+
+### Added — `would_trash`, because "I would bin this and cannot" had no way to be said
+
+The valid dispositions were `trashed` / `surfaced` / `kept` / `saved`. A read-only triage —
+which this plugin's own skill **mandates**, and which is the only thing a connector install
+can do, having no fetcher to act with — cannot honestly write `trashed`, because nothing
+happened to the mail. So `kept` got written. And `kept` in this tool's vocabulary means *the
+routine decided to keep this*: a positive judgment about the sender.
+
+The guard's "not pure noise" rule refuses any sender with kept mail. So on a read-only or
+connector install, **no sender could ever clear it** — not because anything was protected,
+but because there was no correct value to write. The read-only discipline this project
+insists on poisoned the guard this project relies on, on day one, permanently, for every
+install that followed the instructions.
+
+The rule itself was never wrong. Flipping one vendor's history to what it would have looked
+like if the routine had ever been able to act, and re-running the identical proposal, cleared
+the eligible message — **and still refused the injection-shaped message from the same
+sender.** The guard discriminates per message. It was being fed a history that could only
+say no.
+
+`would_trash` means **judged disposable, not acted on.** It is evidence about the sender
+without being a claim about the mailbox. Along with it:
+
+- one vocabulary, in one place: `DISPOSABLE` and `DELIBERATELY_KEPT`, because `disposition
+  != 'trashed'` — true of the string, false of the meaning — was the spelling that would have
+  quietly readmitted the new value as "kept" in six different readers, including the one that
+  decides what lands on the standing work list.
+- `disposition` was **never validated at all**. A typo landed in the store counting as
+  neither binned nor kept, present in the row count and absent from every total that mattered,
+  with the totals still balancing against each other. Now warns, and refuses under `--strict`.
+- an unrecognised value is no longer evidence of anything. It used to fall into the `else`
+  branch of the applier's history and become a positive judgment about the sender — a
+  protection asserted on the strength of a spelling mistake.
+
+### Added — the applier says when the guard cannot pass anything
+
+A guard that is refusing and a guard that is *incapable of not refusing* now read differently.
+If no sender in the store has a single message recorded as disposable, the applier says so and
+names the cause — the same courtesy `doctor` extends with `NOT CONFIGURED` and the scoreboard
+extends with *"not measured is not zero"*.
+
+### Changed — a rule may name (sender, **category**), because mail does not arrive by sender
+
+This is the half that decides whether the feature is usable, and fixing the disposition
+problem above changed nothing about it. Simulated across every sender on a real work store
+with the data corrected: **senders eligible for an auto-trash rule — 0.** Not few. None.
+
+The reason is structural. The highest-volume senders are notification services, and their
+entire job is to multiplex many kinds of message through one address: status noise, bot
+chatter, and the handful of messages where a person named you and assigned you something. The
+volume that makes a sender worth ruling on is the same volume that guarantees the sender is
+mixed. `rule_min_messages` then seals it — below the threshold there is not enough evidence,
+and above it the sender is mixed. The window where a sender is both high-volume and uniformly
+noise was empty.
+
+**The guard was right to refuse.** *This sender is pure noise* is a false statement about such
+an address, and no fix should ever make it pass. The engine was behaving correctly and was
+useless, because the only thing it could express was untrue of everything worth expressing it
+about.
+
+So a rule may now name a slice, which is a statement that can be true. Every existing check
+runs unchanged against the slice: **narrower evidence, not weaker evidence.** A slice with any
+deliberately-kept mail is still refused, `rule_min_messages` still applies to the slice (so
+slicing cannot be used to duck the evidence threshold), and the protected-name check
+deliberately stays at the whole-sender level — a protected person does not become binnable one
+label at a time.
+
+The triage layer already resolved category, concept, importance and `addressed_directly` per
+message. Only the rule layer collapsed them back onto one sender.
+
+The sender panel now shows the breakdown, because that is the feature rather than a detail of
+it: which labels could be ruled on, and for each one that could not, **why**. A button that
+never lights up and never says why is indistinguishable from one that is broken. The rules
+file records the scope in the row itself, not only in the marker — including the caveat that a
+label rule is only as good as the label, which is assigned to future mail by the same triage.
+
+Rules written before this release keep their original marker and stay liftable. Re-keying them
+would have orphaned every existing rule from the button that lifts it, which is the
+acknowledgement defect from 0.9.0 all over again.
+
 ## 0.13.0 — did my data land?
 
 Five defects, one shape: **input the seam accepts and then never mentions again.** `ingest.py`
