@@ -839,6 +839,22 @@ ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "accounts.json")
 DASHBOARD_FILE = os.path.join(CONFIG_DIR, "dashboard.local.json")
 
 
+
+def load_dashboard_cfg():
+    """dashboard.local.json, or {} - read fresh, never raising.
+
+    One reader, because `api_features` already had its own and two of them would drift the
+    moment either grew a key. An unreadable file falls back to the empty config, which is
+    every optional thing off - the same fail-closed direction as everywhere else here.
+    """
+    try:
+        with open(DASHBOARD_FILE, encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
 def api_features(conn, q):
     """Which OPTIONAL panels this deployment has switched on.
 
@@ -2107,6 +2123,31 @@ def api_resolve(conn, q, body=None):
     return {"ok": True, "key": key, "state": "resolved", "where": where}
 
 
+def api_scoreboard(conn, q):
+    """The one number here that measures the OUTCOME rather than the activity.
+
+    Everything else on this dashboard counts what the tool did - messages swept, rules
+    written, items acknowledged - and all of it can rise while the thing the owner cares
+    about gets worse. A reach is somebody giving up on the inbox and going elsewhere to
+    another channel, which is the failure this whole tool exists to prevent, arriving with
+    a timestamp.
+    """
+    import elsewhere                                                # noqa: PLC0415
+    rows = [dict(r) for r in conn.execute(
+        "SELECT sender, subject, COALESCE(msg_day, run_date) AS day FROM messages "
+        "WHERE sender IS NOT NULL AND sender != ''")]
+    out = elsewhere.scoreboard(rows, cfg=load_dashboard_cfg(),
+                           protected=load_protected()["names"])
+    # The guard list is the definition of "people who matter", so a scoreboard read while it
+    # is empty is scoring against nobody. Say so rather than reporting a confident zero in
+    # the column that carries the whole point.
+    if not out["protected_known"]:
+        out["who_matters_unknown"] = (
+            "Nobody is on the protected list, so \"from people who matter\" cannot be "
+            "counted. Fill it in and this column starts meaning something.")
+    return out
+
+
 API = {
     "/api/whoami": api_whoami,
     "/api/setup": api_setup,
@@ -2129,6 +2170,7 @@ API = {
     "/api/new-hosts": api_new_hosts,
     "/api/questions": api_questions,
     "/api/open-items": api_open_items,
+    "/api/scoreboard": api_scoreboard,
 }
 
 # Writing endpoints are a SEPARATE table, reachable only via do_POST and only after the

@@ -2,7 +2,7 @@
   "name": "email-dashboard",
   "displayName": "Email Routine Dashboard",
   "description": "A local, private triage board for your own mail. An agent sweeps your mailboxes on a schedule; this is where the result lives - what was binned and why, what was kept, what needs you. Messages open in a sandboxed reader that strips scripts and blocks every remote image, so a tracking pixel never fires. Learns which hosts each sender normally links to and flags one writing from somewhere new. Ships with no mailboxes: you add your own.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "author": {
     "name": "Ame No Murakumo"
   },

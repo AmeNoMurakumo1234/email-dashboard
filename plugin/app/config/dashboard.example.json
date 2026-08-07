@@ -12,5 +12,17 @@
 
   "panels": {
     "steam": false
-  }
+  },
+
+  "_elsewhere_senders": [
+    "OPTIONAL. Leave this out and the tool decides by SHAPE: mail from an unrepliable",
+    "address (no-reply, notifications, alerts) whose subject says a person wanted you.",
+    "That works for platforms nobody has heard of, which is the point.",
+    "",
+    "Set it to an exact list of sender substrings if your workplace runs something the",
+    "shape test misses, or if the shape test is picking up mail you do not consider a",
+    "chat platform. A list REPLACES the shape test rather than adding to it.",
+    "",
+    "  \"elsewhere_senders\": [\"chat.example-corp.com\", \"im-notify.example.net\"]"
+  ]
 }

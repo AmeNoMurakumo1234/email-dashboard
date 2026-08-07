@@ -23,90 +23,122 @@
     </div>
   </header>
 
-  <!-- FIRST RUN. A fresh install used to look BROKEN rather than NEW: every panel rendered
-       an honest empty state, which is indistinguishable from a tool that is failing, and the
-       one thing it never said was the only thing a new user needs - you have no mailboxes
-       yet, here is the next step. Shown only while something is outstanding, and it removes
-       itself the moment the last step is done, so it never becomes furniture. -->
-  <section class="panel setup" id="setupPanel" hidden>
-    <h2 class="setup-head">
-      <span>👋 Finish setting up <span class="muted" id="setupCount"></span></span>
-    </h2>
-    <div id="setupList"></div>
-  </section>
+  <!-- THE ATTENTION ROW. Four conditional panels that each hid themselves when empty -
+       which was right - but stacked full-width when they did not, and two of them showing
+       at once cost 231 vertical pixels before the working area started. Side by side they
+       cost the tallest, and each caps its own list and scrolls inside it, so a long
+       outstanding list can no longer push the mail off the screen. Every one of them still
+       disappears entirely when it has nothing to say. -->
+  <div class="alerts">
+    <!-- FIRST RUN. A fresh install used to look BROKEN rather than NEW: every panel rendered
+         an honest empty state, which is indistinguishable from a tool that is failing, and the
+         one thing it never said was the only thing a new user needs - you have no mailboxes
+         yet, here is the next step. Shown only while something is outstanding, and it removes
+         itself the moment the last step is done, so it never becomes furniture. -->
+    <section class="panel setup" id="setupPanel" hidden>
+      <h2 class="setup-head">
+        <span>👋 Finish setting up <span class="muted" id="setupCount"></span></span>
+      </h2>
+      <div id="setupList"></div>
+    </section>
 
-  <!-- WORKFLOW ACTIONS. The one category where a missed link costs something that cannot
-       be recovered - a questionnaire due before a visit, a video appointment whose join
-       link arrives half an hour beforehand. Sits above everything else and hides itself
-       entirely when there is nothing outstanding, so its presence always means something.
-       WHICH senders carry a workflow is configuration; this panel names no organisation. -->
-  <section class="panel workflow" id="wfPanel" hidden>
-    <h2 class="wf-head">
-      <span>⚕ Needs you to do something <span class="muted" id="wfCount"></span></span>
-      <button class="linkbtn" id="wfShowDone" type="button">show handled</button>
-    </h2>
-    <div id="wfList"></div>
-  </section>
+    <!-- WORKFLOW ACTIONS. The one category where a missed link costs something that cannot
+         be recovered - a questionnaire due before a visit, a video appointment whose join
+         link arrives half an hour beforehand. Sits above everything else and hides itself
+         entirely when there is nothing outstanding, so its presence always means something.
+         WHICH senders carry a workflow is configuration; this panel names no organisation. -->
+    <section class="panel workflow" id="wfPanel" hidden>
+      <h2 class="wf-head">
+        <span>⚕ Needs you to do something <span class="muted" id="wfCount"></span></span>
+        <button class="linkbtn" id="wfShowDone" type="button">show handled</button>
+      </h2>
+      <div id="wfList"></div>
+    </section>
 
-  <!-- STILL OPEN. Every other panel here answers "what arrived?", which is the right
-       question for a sweep and the wrong one for a person: a task assigned three weeks ago
-       arrived exactly once and has been invisible ever since. A brief is a delta, and
-       deltas cannot carry an obligation forward.
+    <!-- STILL OPEN. Every other panel here answers "what arrived?", which is the right
+         question for a sweep and the wrong one for a person: a task assigned three weeks ago
+         arrived exactly once and has been invisible ever since. A brief is a delta, and
+         deltas cannot carry an obligation forward.
 
-       This is the only list on the page that gets WORSE by being ignored, so it sorts by
-       AGE rather than by importance - a three-week-old item nobody has touched matters
-       more than today's. Resolving off-channel is a first-class outcome: most things that
-       arrive by mail are finished on a call or in a chat, and with nowhere to say so the
-       only ways to clear an item are to lie or to leave it open forever. Both end with the
-       list being ignored. -->
-  <section class="panel openitems" id="openPanel" hidden>
-    <h2 class="wf-head">
-      <span>📌 Still open <span class="muted" id="openCount"></span></span>
-      <button class="linkbtn" id="openShowDone" type="button">show resolved</button>
-    </h2>
-    <div class="quiet-reach muted" id="openWho" hidden></div>
-    <div id="openList"></div>
-  </section>
+         This is the only list on the page that gets WORSE by being ignored, so it sorts by
+         AGE rather than by importance - a three-week-old item nobody has touched matters
+         more than today's. Resolving off-channel is a first-class outcome: most things that
+         arrive by mail are finished on a call or in a chat, and with nowhere to say so the
+         only ways to clear an item are to lie or to leave it open forever. Both end with the
+         list being ignored. -->
+    <section class="panel openitems" id="openPanel" hidden>
+      <h2 class="wf-head">
+        <span>📌 Still open <span class="muted" id="openCount"></span></span>
+        <button class="linkbtn" id="openShowDone" type="button">show resolved</button>
+      </h2>
+      <div class="quiet-reach muted" id="openWho" hidden></div>
+      <div id="openList"></div>
+    </section>
 
-  <!-- A SENDER YOU KNOW, POINTING SOMEWHERE IT NEVER HAS. This is the one check here that
-       is noise-free by construction: it cannot fire on a stranger, and it stays silent on
-       the ESP redirectors a naive does-the-domain-match test screams about. It used to
-       print to a terminal and live only in that day's prose, which made the sharpest signal
-       in this lane also the easiest to scroll past.
-       Hidden whenever nothing is unreviewed - and a verdict retires the pairing for good,
-       so this can sit on the page without becoming the noise it exists to cut through. -->
-  <section class="panel hosts" id="hostPanel" hidden>
-    <h2 class="wf-head">
-      <span>🔗 A known sender used a new link host <span class="muted" id="hostCount"></span></span>
-      <button class="linkbtn" id="hostShowDone" type="button">show reviewed</button>
-    </h2>
-    <div id="hostList"></div>
-  </section>
+    <!-- A SENDER YOU KNOW, POINTING SOMEWHERE IT NEVER HAS. This is the one check here that
+         is noise-free by construction: it cannot fire on a stranger, and it stays silent on
+         the ESP redirectors a naive does-the-domain-match test screams about. It used to
+         print to a terminal and live only in that day's prose, which made the sharpest signal
+         in this lane also the easiest to scroll past.
+         Hidden whenever nothing is unreviewed - and a verdict retires the pairing for good,
+         so this can sit on the page without becoming the noise it exists to cut through. -->
+    <section class="panel hosts" id="hostPanel" hidden>
+      <h2 class="wf-head">
+        <span>🔗 A known sender used a new link host <span class="muted" id="hostCount"></span></span>
+        <button class="linkbtn" id="hostShowDone" type="button">show reviewed</button>
+      </h2>
+      <div id="hostList"></div>
+    </section>
 
-  <section class="kpis" id="kpis"></section>
 
-  <!-- THE WHOLE RECORD AS ONE GRID. The run history used to be a dropdown of dates, which
-       is the least evocative possible rendering of everything this lane has done. Quiet
-       stretches, spikes and escalating weeks are visible here and in no table. -->
-  <section class="panel heat" id="heatPanel">
-    <h2 class="heat-head">
-      <span>The record <span class="muted" id="heatSummary"></span></span>
-      <span class="heat-legend" id="heatLegend"></span>
-    </h2>
-    <div class="heat-wrap"><div id="heatmap"></div></div>
-  </section>
+    <!-- ONE BAND, NOT FOUR STACKED ROWS.
+         These used to be four full-width sections one under another, and on a 900px screen
+         they ate 638 pixels before the working panels started - which left the two panels
+         people actually read sharing 408, about two emails at a time, on a page that then
+         scrolled. Side by side they cost the height of the tallest one instead of the sum of
+         all of them. The order is the owner's: counts, then who is connected, then the
+         record, then the legend and the scoreboard. -->
+  </div>
 
-  <section class="panel" id="accountPanel">
-    <h2 class="acct-head">
-      <span>Account status <span class="muted" id="acctSummary"></span></span>
-      <button id="acctToggle" class="linkbtn" type="button">show details</button>
-    </h2>
-    <!-- Collapsed by default. The daily question is "did anything fail?", which the strip
-         answers in one glance; the full chips cost 170px of vertical space that the working
-         panels below need more (measured: they pushed the pager off a 720px viewport). -->
-    <div class="account-strip" id="accountStrip"></div>
-    <div class="account-grid" id="accounts" hidden></div>
-  </section>
+  <div class="topband">
+    <section class="kpis" id="kpis"></section>
+    <section class="panel" id="accountPanel">
+      <h2 class="acct-head">
+        <span>Account status <span class="muted" id="acctSummary"></span></span>
+        <button id="acctToggle" class="linkbtn" type="button">show details</button>
+      </h2>
+      <!-- Collapsed by default. The daily question is "did anything fail?", which the strip
+           answers in one glance; the full chips cost 170px of vertical space that the working
+           panels below need more (measured: they pushed the pager off a 720px viewport). -->
+      <div class="account-strip" id="accountStrip"></div>
+      <div class="account-grid" id="accounts" hidden></div>
+    </section>
+    <!-- THE WHOLE RECORD AS ONE GRID. The run history used to be a dropdown of dates, which
+         is the least evocative possible rendering of everything this lane has done. Quiet
+         stretches, spikes and escalating weeks are visible here and in no table. -->
+    <section class="panel heat" id="heatPanel">
+      <h2 class="heat-head">
+        <span>The record <span class="muted" id="heatSummary"></span></span>
+        </h2>
+      <div class="heat-wrap"><div id="heatmap"></div></div>
+    </section>
+
+
+    <!-- THE OUTCOME, NOT THE ACTIVITY. Everything else on this page counts what the tool
+         did; this counts how often somebody gave up on the inbox and went elsewhere
+         to find them. It is small on purpose - one number, its direction, and the
+         caveat that stops a quiet month reading as a win. -->
+    <aside class="band-side">
+      <section class="panel score" id="scorePanel">
+        <div class="score-head">
+          <span>🎯 Before they went elsewhere</span>
+          <button class="linkbtn" id="scoreWhy" type="button" hidden>why?</button>
+        </div>
+        <div class="score-body" id="scoreBody"></div>
+      </section>
+      <div class="heat-legend" id="heatLegend"></div>
+    </aside>
+  </div>
 
   <div class="split">
     <section class="panel left scroll-panel">

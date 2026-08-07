@@ -192,6 +192,7 @@ async function init() {
   await loadRun();
   loadWorkflowActions().catch(() => {}); // never let this panel block the rest of the page
   loadOpenItems().catch(() => {});
+  loadScoreboard().catch(() => {});
   loadNewHosts().catch(() => {});        // same: a quiet panel must never break a loud one
   loadHeatmap().catch(() => {});   // decorative-adjacent: never block the run view on it
   setView(ui.view);   // restore the tab the user left on (trash | steam)
@@ -1560,6 +1561,58 @@ let wfShowDone = false;
 
 let openShowDone = false;
 
+// ---------- the scoreboard: the only number here that measures the outcome ----------
+// Everything else on this page counts what the tool DID. This counts how often it failed:
+// somebody gave up on the inbox and went to another channel to find its owner.
+
+async function loadScoreboard() {
+  let d;
+  try {
+    d = await get("/api/scoreboard");
+  } catch (e) {
+    return;
+  }
+  const body = $("#scoreBody");
+  const why = $("#scoreWhy");
+
+  // NOT MEASURED IS NOT ZERO, and it must not LOOK like zero either. A big confident "0"
+  // from an instrument that has never fired once is congratulation for having no
+  // instrument, which is worse than showing nothing.
+  if (!d.measured) {
+    body.className = "score-body unmeasured";
+    body.textContent = "not measured yet";
+    why.hidden = false;
+    why.onclick = () => alert(d.why_not);
+    return;
+  }
+
+  body.className = "score-body";
+  const t = d.trend || {};
+  const last = (d.months || []).filter((m) => !m.partial).slice(-1)[0];
+  const rate = last ? last.rate : null;
+  const arrow = { better: "↓", worse: "↑", flat: "→" }[t.direction] || "";
+
+  // TWO LINES. The tile is one column of a band that sits between the reader and their
+  // mail, so every line it takes is a line of email somebody does not see. The months it
+  // compared, the caveat about volume, and the note about an empty guard all live behind
+  // "why?" - present, one click away, and not costing height on every screen forever.
+  body.innerHTML =
+    `<div><span class="score-rate">${rate === null ? "—" : rate}</span> ` +
+    `<span class="muted">per hundred msgs</span> ` +
+    `<span class="score-dir ${esc(t.direction || "unknown")}">${arrow} ` +
+    `${esc(t.direction || "")}</span></div>` +
+    (d.protected_known
+      ? `<div class="muted">${last ? last.from_people_who_matter : 0} from people ` +
+        `who matter</div>`
+      : `<div class="muted">nobody on the protected list yet</div>`);
+
+  // The caveat is one click away rather than inline, but it is never absent: a direction
+  // without the volume behind it is how "quiet month" gets read as "tool working".
+  why.hidden = false;
+  why.onclick = () =>
+    alert([t.detail, t.caveat, d.who_matters_unknown].filter(Boolean).join("\n\n"));
+}
+
 async function loadOpenItems() {
   let data;
   try {
@@ -1613,14 +1666,32 @@ function openRow(it) {
       ? "today"
       : `${it.days_open} day${it.days_open === 1 ? "" : "s"}`;
 
-  row.innerHTML =
-    `<div class="open-main">` +
+  // WHICH MAILBOX, and a way IN. This row named a subject and a sender and nothing else,
+  // so closing an item meant first working out which of eight accounts it had come from and
+  // then finding it by hand. You cannot decide that something is done if you cannot see
+  // what it is; the panel was asking for a judgement while withholding the evidence.
+  const main = el("div", "open-main");
+  main.innerHTML =
     `<div class="open-subject">${esc(it.subject || "(no subject)")}</div>` +
     `<div class="open-meta">${esc(it.sender || "")}` +
+    (it.account ? `<span class="open-acct">${esc(it.account)}</span>` : "") +
     `<span class="open-age">${esc(age)}</span>` +
     (it.runs_seen > 1 ? `<span class="muted">seen in ${it.runs_seen} runs</span>` : "") +
-    (it.importance ? `<span class="badge">${esc(it.importance)}</span>` : "") +
-    `</div></div>`;
+    (it.importance ? `<span class="badge">${esc(it.importance)}</span>` : "");
+  if (it.state !== "resolved") {
+    // A thread-keyed item has no Message-ID, so the viewer cannot fetch it - mvOpen says so
+    // in its own words rather than this row guessing. Either way the click is offered,
+    // because "here is why I cannot open it" is still an answer and silence is not.
+    main.classList.add("open-clickable");
+    main.title = "Open this message";
+    main.addEventListener("click", () =>
+      mvOpen({
+        subject: it.subject, sender: it.sender, account: it.account,
+        run_date: it.last_seen || it.first_seen,
+        message_id: it.kind === "message" ? it.key : null,
+      }));
+  }
+  row.appendChild(main);
 
   const acts = el("div", "open-actions");
   if (it.state === "resolved") {
@@ -1948,7 +2019,11 @@ async function loadHeatmap() {
   }
   if (cur.length) weeks.push(cur);
 
-  const CELL = 17, GAP = 4, TOP = 16;
+  // The record sets the height of the whole top band, so its cell size is a layout
+  // decision rather than a taste one: 17+4 made a seven-row grid 147px tall before the
+  // heading, and the band is the thing standing between the reader and their mail.
+  // 13+3 keeps a day comfortably clickable and gives back ~40 vertical pixels.
+  const CELL = 13, GAP = 3, TOP = 13;
   const w = weeks.length * (CELL + GAP);
   const h = TOP + 7 * (CELL + GAP);
   const parts = [];
@@ -2013,7 +2088,12 @@ async function loadHeatmap() {
 
   const t = data.totals || {};
   allTime = t;                          // context for the KPI drill-downs
-  $("#heatSummary").textContent =
+  // TERSE, because this line was setting the width of the whole panel. "56 runs - I read
+  // 1510 so you read 552" is 250px of text wrapped around a 144px chart, so the record
+  // drew itself in a box half of which was empty - which reads as a failure to load. The
+  // sentence still exists, as the tooltip, for anyone who wants it spelled out.
+  $("#heatSummary").textContent = `${t.runs} runs · ${t.messages} → ${t.kept}`;
+  $("#heatSummary").title =
     `${t.runs} runs - I read ${t.messages} so you read ${t.kept}`;
   const used = [...new Set(days.map((d) => d.concept))].slice(0, 6);
   const open = days.filter((d) => (d.action_open == null ? d.action : d.action_open)).length;

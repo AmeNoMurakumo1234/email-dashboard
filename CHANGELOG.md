@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.11.0 — room to work, and a number that measures the outcome
+
+### Changed — the chrome gives the mail back its screen
+
+Measured at 1600x900 before this: header, the attention panels, the KPI row, the record and
+the account grid were five full-width rows stacked one under another, and they used **638
+vertical pixels before the two working panels started**. Those got 408 and the page then
+scrolled — about two emails at a time on a laptop.
+
+Stacked, a top region costs the **sum** of its sections. Side by side it costs the tallest.
+
+- One **top band**: counts, who is connected, the record, then the legend and the
+  scoreboard, in that order.
+- One **attention row**: the setup, workflow, still-open and new-host panels share a line
+  instead of each taking one, and each caps its list and scrolls inside it — an outstanding
+  list can no longer push the mail off the screen.
+- The working area's floor is expressed against the viewport. A fixed 408px was itself
+  causing the scroll it had been written to prevent.
+
+| viewport | above the panels | panels get | page scrolls |
+|---|---|---|---|
+| 1920×1080 | 393 (was 638) | 642 | no |
+| 1366×768 | 350 | 391 | no |
+| 1280×720 | 322 | 370 | no |
+
+Roughly seven sender rows visible on a laptop where two fitted before, and no page scroll at
+any of these sizes — a page that scrolls by even a few pixels moves every control under the
+cursor between looking at it and clicking it.
+
+Three things found while measuring, each of which looked like a bug rather than a small
+chart: the record's panel was being sized by its own **heading text**, so it drew a box half
+of which was empty; the legend, squeezed into a narrow column, wrapped to five lines and
+became the tallest thing in the band while 350px sat unused beside it; and **show details**
+laid eight accounts across a 340px panel, wrapping every address one character per line.
+That view takes width now, not height.
+
+### Fixed — an open item you can actually open
+
+The **Still open** rows named a subject and a sender and nothing else, so clearing one meant
+first working out which of several mailboxes it came from and finding it by hand. They now
+show the account and open the message in the sandboxed viewer on click. Asking for a
+judgement while withholding the evidence is not a panel, it is a quiz.
+
+### Added — "Before they went elsewhere"
+
+The only number on this dashboard that measures the **outcome** rather than the activity.
+Everything else counts what the tool did, and all of it can rise while the thing its owner
+cares about gets worse.
+
+A *reach* is somebody giving up on the inbox and going to another channel to find you. One
+from a person who matters means they had already given up before the notice even arrived.
+
+It is detected by **shape, not by brand**: mail from an unrepliable address whose subject
+says a person wanted you. That works for platforms nobody has heard of — which is the
+deployment that most needs it — and `elsewhere_senders` narrows it to an exact list where
+the shape test is wrong.
+
+The first version matched on sender alone and reported 144 of these on a real mailbox. Every
+one was a broadcast: *"X posted a new photo"*, *"catch up on moments you've missed"*. Nobody
+was looking for anybody. **A reach needs the subject to qualify.**
+
+Three honesty rules, each with a test:
+
+- **Not measured is not zero.** A mailbox with nothing matching says so; a confident `0`
+  from an instrument that has never fired is congratulation for having no instrument.
+- **A quiet month is not a win.** The rate per hundred messages is what moves, and the
+  volume behind it travels with the verdict.
+- **The month in progress is not a data point.** Six days of one month against all of the
+  last reports a collapse every time the page is opened early, and the collapse is the
+  calendar.
+
 ## 0.10.0 — a connector install can actually read its mail
 
 0.8.0 let an account **declare** that something else fetches it, and `doctor` reported that
