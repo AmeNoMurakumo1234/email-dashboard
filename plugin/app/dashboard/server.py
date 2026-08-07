@@ -1450,6 +1450,33 @@ subject_shape = db.subject_shape
 _SHAPE_SUBS = db._SHAPE_SUBS
 
 
+
+def _days_between_dates(a, b):
+    """Whole days from a to b, or None if either cannot be read. Never a guess."""
+    from datetime import date                                      # noqa: PLC0415
+    try:
+        y1, m1, d1 = (int(x) for x in str(a)[:10].split("-"))
+        y2, m2, d2 = (int(x) for x in str(b)[:10].split("-"))
+        return (date(y2, m2, d2) - date(y1, m1, d1)).days
+    except (ValueError, TypeError):
+        return None
+
+
+def _day_gaps(dates):
+    """Calendar days between consecutive arrivals.
+
+    A date that cannot be parsed drops out rather than contributing a made-up interval -
+    one unreadable date in the middle would otherwise merge two real gaps into a third that
+    never happened.
+    """
+    out = []
+    for a, b in zip(dates, dates[1:]):
+        n = _days_between_dates(a, b)
+        if n is not None:
+            out.append(n)
+    return out
+
+
 def api_repeats(conn, q):
     """The SAME thing arriving again and again, collapsed into one item.
 
@@ -1513,7 +1540,26 @@ def api_repeats(conn, q):
         pos = sorted({idx[d] for d in dates if d in idx})
         if len(pos) < min_n:
             continue
-        gaps = [b - a for a, b in zip(pos, pos[1:])]
+
+        # GAPS IN CALENDAR DAYS, NOT IN RUNS.
+        #
+        # "Arriving faster" is a claim about the world; counting the gap in RUNS made it
+        # partly a claim about how often the tool was run. That was survivable while every
+        # run was a daily sweep, and stopped being so when a historical intake staged one
+        # run per arrival day from a single mailbox: this store went to 252 runs of which
+        # ~51 were sweeps, and 139 covered exactly one account. Measured on a real
+        # twelve-notice series, the same gaps read [20,5,3,4,4,2,2,3,155,2,2] against all
+        # runs and [10,3,2,1,2,2,2,1,112,2,2] against that mailbox - roughly double, and
+        # unevenly.
+        #
+        # Uneven is the dangerous part, because acceleration compares EARLY gaps against
+        # RECENT ones: an intake concentrated in one period can manufacture an acceleration
+        # that never happened, or hide one that did. Days are immune to all of it - they do
+        # not care how many times anybody looked.
+        #
+        # Scoping per-mailbox (the fix `api_quiet` needed) would NOT have been right here:
+        # it re-bases the same wrong unit.
+        gaps = _day_gaps(dates)
         # Acceleration is only meaningful when the gaps are between real ARRIVALS. On the
         # approximate basis the gaps are partly my own re-listing cadence, so no claim is
         # made rather than a shaky one.
@@ -1534,7 +1580,12 @@ def api_repeats(conn, q):
             "notices": n_notices, "basis": basis,
             "first_seen": dates[0], "last_seen": dates[-1],
             "runs_since_last": last_i - pos[-1],
+            # Days, and SAID to be days. A bare number that changed meaning silently is how
+            # a reader keeps trusting a figure that no longer says what they think.
+            "days_since_last": _days_between_dates(dates[-1], run_days[-1])
+            if run_days else None,
             "median_gap": statistics.median(gaps) if gaps else 0,
+            "gap_unit": "days",
             "accelerating": accelerating,
             "concept": concept, "concept_key": concepts.key_of(concept),
             "weight": weight,

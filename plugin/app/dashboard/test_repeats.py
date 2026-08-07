@@ -97,11 +97,99 @@ if row and row["accelerating"]:
 
 print("=== repeat-collapsing: two-sided control ===")
 print("  over-count . one message re-listed 6x is ONE notice")
+# ---------------------------------------------------------------------------------------
+# GAPS ARE CALENDAR DAYS, NOT RUNS.
+#
+# "Arriving faster" is a claim about the world. Counted in runs it was partly a claim about
+# how often the tool ran - survivable while every run was a daily sweep, and not once a
+# historical intake staged one run per arrival day from a single mailbox. On the reporting
+# store that took 252 runs, of which ~51 were sweeps.
+#
+# The danger is not that the numbers grow, it is that they grow UNEVENLY: acceleration
+# compares early gaps against recent ones, so an intake concentrated in one period can
+# manufacture an acceleration that never happened.
+def _case_days_not_runs():
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import server                                                  # noqa: PLC0415
+
+    class Cur:
+        def __init__(self, items):
+            self.items = items
+
+        def fetchall(self):
+            return self.items
+
+        def __iter__(self):
+            return iter(self.items)
+
+    class Conn:
+        def __init__(self, rows_, runs_):
+            self.rows, self.runs = rows_, runs_
+
+        def execute(self, sql, args=()):
+            if "FROM runs" in sql:
+                return Cur([(d,) for d in self.runs])
+            return Cur(self.rows)
+
+    # A steady monthly notice: four arrivals, 28 days apart. Not accelerating, whatever
+    # the run history looks like.
+    dates = ["2026-01-01", "2026-01-29", "2026-02-26", "2026-03-26"]
+    rows_ = [{"run_date": d, "account": "a@x", "sender": "Biller <b@example.com>",
+              "subject": "statement ready", "disposition": "kept", "category": "bill",
+              "concept": "money (bills, receipts, banking)",
+              "message_id": "<%s@x>" % d} for d in dates]
+
+    # Sparse run history: only the four days themselves.
+    sparse = server.api_repeats(Conn(rows_, dates), {})
+    # Dense run history: a backfill added ninety single-mailbox days in the middle.
+    dense_runs = sorted(set(dates) | {"2026-02-%02d" % (i + 1) for i in range(28)})
+    dense = server.api_repeats(Conn(rows_, dense_runs), {})
+
+    def cadence(out):
+        return [(i["median_gap"], i["accelerating"]) for i in out["items"]]
+
+    if not cadence(sparse):
+        fails.append("MISS: the steady series did not qualify at all, so this proves nothing")
+    elif cadence(sparse) != cadence(dense):
+        fails.append("DRIFT: the same series read differently once the run history grew - "
+                     "%s vs %s" % (cadence(sparse), cadence(dense)))
+    # An unreadable date must DROP OUT, not contribute a zero. A zero merges two real gaps
+    # into a third that never happened, and it lands in the middle of the series where the
+    # acceleration comparison is most sensitive to it.
+    bad = [dict(r) for r in rows_]
+    bad[2]["run_date"] = "not-a-date"
+    bad_dates = [r["run_date"] for r in bad]
+    out_bad = server.api_repeats(Conn(bad, sorted(set(bad_dates))), {})
+    # Valid pairs are 28 and 56 days, so the median must be 42. A zero appended for the
+    # unreadable pair gives [28, 56, 0] and a median of 28 - a plausible-looking number,
+    # which is why "is it zero?" was the wrong question to ask.
+    for i in out_bad["items"]:
+        if i["median_gap"] != 42:
+            fails.append("MISS: an unreadable date changed the cadence to %r, and the two "
+                         "readable gaps are 28 and 56 - it should drop out, not contribute "
+                         "an interval that never happened" % i["median_gap"])
+
+    for i in sparse["items"]:
+        if i["median_gap"] != 28:
+            fails.append("WRONG UNIT: a monthly series reported a median gap of %r, and it "
+                         "is 28 days" % i["median_gap"])
+        if i["accelerating"]:
+            fails.append("FALSE ALARM: a perfectly steady series called accelerating")
+        if i.get("gap_unit") != "days":
+            fails.append("MISS: the payload does not say the gap is in days, so a reader "
+                         "keeps the old run-based reading")
+
+
+_case_days_not_runs()
+
+
 print("  under-count four distinct arrivals are four")
 print("  shape ...... changing amounts/dates still collapse")
 print("  control .... an accelerating series IS flagged")
 print("  control .... a steady series is NOT")
 print("  honesty .... unlinked rows fall back and say so")
+print("  unit ....... gaps are calendar days, unmoved by run history")
 if fails:
     print(f"\n{len(fails)} FAILURE(S):")
     for f in fails:

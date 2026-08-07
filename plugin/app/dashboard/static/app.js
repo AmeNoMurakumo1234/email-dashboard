@@ -2268,6 +2268,15 @@ async function loadRepeats() {
       `<div class="qbody"><b>${it.notices}</b> ${it.basis === "messages"
         ? "separate arrivals" : "run appearances"} from ${esc(it.sender || "")}, ` +
       `${esc(it.first_seen)} to ${esc(it.last_seen)}` +
+      // The cadence, in DAYS, said out loud. Gaps used to be counted in runs, which made
+      // "arriving faster" partly a statement about how often the tool ran; days are a fact
+      // about the sender. Showing the unit is what stops the old reading surviving the fix.
+      (it.median_gap
+        ? `, about every <b>${it.median_gap}</b> day${it.median_gap === 1 ? "" : "s"}`
+        : "") +
+      (it.days_since_last != null
+        ? `, last ${it.days_since_last} day${it.days_since_last === 1 ? "" : "s"} ago`
+        : "") +
       `${it.still_open ? " - still in the mailbox" : " - binned"}.</div>`;
     row.addEventListener("click", () => {
       ui.query = it.subject || ""; ui.category = null; ui.concept = null;
