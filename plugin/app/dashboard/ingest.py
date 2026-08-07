@@ -54,7 +54,8 @@ reading db.ingest_run's INSERT statement:
   message : account, sender, subject, msg_date, disposition, category, reason,
             importance, message_id, injection_signals, to, cc, body_text, web_link
   account : account, role, status, auth, inbox_count, fetched, trashed, kept, error
-  run     : run_date, notes, accounts, messages, steam_sales
+  ack     : kind (message|thread), message_id, sender, subject, account, note, on
+  run     : run_date, notes, accounts, messages, steam_sales, acknowledgements
 
 Anything else is NOT stored, and every run says so - `ignored N value(s) under K
 unrecognised key(s)`, named. Unknown keys are reported rather than rejected so a caller
@@ -158,6 +159,7 @@ def main():
     accounts = data.get("accounts", [])
     messages = data.get("messages", [])
     steam_sales = data.get("steam_sales", [])
+    acknowledgements = data.get("acknowledgements", []) or []
 
     for a in accounts:
         a["status"] = normalize_status(a.get("status"))
@@ -330,6 +332,38 @@ def main():
               file=sys.stderr)
         return 2
 
+    # ACKNOWLEDGEMENTS, IN THE SAME CALL THAT RECORDS WHAT WAS SEEN.
+    #
+    # Applied before either write path and independently of both, because an acknowledgement
+    # is not about a run date - it is a statement that the owner has dealt with something,
+    # and it stays true whichever day the mail arrived on.
+    #
+    # `INSERT INTO acks` used to exist in exactly one place, the dashboard's HTTP handler, so
+    # a scheduled sweep with no browser could read the acks table only by opening the SQLite
+    # file and could not write one at all. What that forces is a second ledger - a markdown
+    # file the sweep reads and the dashboard does not - and then two stores answer "has the
+    # owner dealt with this?", disagree, and are each correct for their own reader.
+    acked = ack_errors = 0
+    if acknowledgements:
+        import server                                              # noqa: PLC0415
+        conn = db.connect()
+        for a in acknowledgements:
+            res = server.record_ack(
+                conn, kind=a.get("kind") or "message", message_id=a.get("message_id"),
+                sender=a.get("sender"), subject=a.get("subject"),
+                account=a.get("account"), note=a.get("note"),
+                on=a.get("on") is not False)
+            if res.get("ok"):
+                acked += 1
+            else:
+                ack_errors += 1
+                print("  ack refused: %s (%s)"
+                      % (res.get("error"), (a.get("subject") or "")[:50]), file=sys.stderr)
+        print("acked   %d/%d acknowledgement(s) recorded" % (acked, len(acknowledgements))
+              + ("" if not ack_errors else
+                 "  <- %d had nothing identifiable to acknowledge" % ack_errors),
+              file=sys.stderr)
+
     if args.by_arrival:
         # ONE RUN PER ARRIVAL DAY. Everything in a historical batch shares one sweep date,
         # so ingesting it as a single run puts a year of old mail into TODAY - and today's
@@ -383,6 +417,7 @@ def main():
             "discarded": {"accounts": len(accounts)} if accounts else {},
             "impossible_accounts": impossible, "unknown_dispositions": bad_disp,
             "injection_flagged": flagged, "opened": opened_all,
+            "acknowledged": acked, "acknowledgements_refused": ack_errors,
             "open_items_suppressed": bool(args.no_open_items),
         }))
         return 0
@@ -409,6 +444,7 @@ def main():
         "ignored_keys": sorted(ignored), "discarded": {},
         "impossible_accounts": impossible, "unknown_dispositions": bad_disp,
         "injection_flagged": flagged,
+        "acknowledged": acked, "acknowledgements_refused": ack_errors,
         "steam_sales": len(steam_sales),
         "trashed": sum(1 for m in messages if m.get("disposition") == "trashed"),
         "would_trash": sum(1 for m in messages

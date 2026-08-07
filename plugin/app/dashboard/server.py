@@ -513,32 +513,46 @@ def api_host_review(conn, q, body=None):
     return {"ok": True, "sender_key": key, "host": host, "verdict": verdict}
 
 
-def api_ack(conn, q, body=None):
-    """Acknowledge (or un-acknowledge) an item. POST only.
+def record_ack(conn, kind="message", message_id=None, sender=None, subject=None,
+               account=None, note=None, on=True):
+    """Record (or lift) an acknowledgement. THE one implementation, reachable without a UI.
 
-    `on: false` lifts it - an acknowledgement is a statement about attention, not a
-    deletion, and a mistaken one has to be reversible.
+    `INSERT INTO acks` used to appear in exactly one place - the HTTP handler below - so an
+    acknowledgement could only be made by clicking in a browser. That is fine for a person at
+    a screen and wrong for the operating model this plugin prescribes, where the thing
+    maintaining the board day to day is a scheduled task with no UI and no session.
+
+    The gap is not cosmetic. An item can be dealt with OFF-CHANNEL - answered in a call,
+    decided in a meeting, delegated verbally - while the mail thread shows nothing, and a
+    routine with no way to record that re-escalates it every single run. So a parallel
+    markdown ledger gets invented, and then two stores answer "has the owner dealt with this?"
+    - the sweep reading one, the dashboard reading the other, both behaving correctly, and
+    disagreeing. A clean result from a broken instrument, arrived at from a new direction.
+
+    The divergence runs the wrong way, too: off-channel resolutions are the single most
+    valuable thing a human can tell a mail tool, because it can never infer them - and they
+    were exactly the ones that could only be recorded in the store the dashboard ignores.
+
+    The table, the key derivation and the annotation path all already existed. Only the door
+    was missing.
     """
-    body = body or {}
-    kind = (body.get("kind") or "message").strip()
+    kind = (kind or "message").strip()
     if kind not in ("message", "thread"):
         return {"ok": False, "error": "kind must be 'message' or 'thread'"}
-    key = ack_key(kind, body.get("message_id"), body.get("sender"), body.get("subject"),
-                  body.get("account"))
+    key = ack_key(kind, message_id, sender, subject, account)
     # An empty SHAPE is the dangerous case, not an empty key. "me@example.com|" would be a
     # perfectly well-formed thread key that matches every subject-less message in that
-    # mailbox - one click silencing an unbounded set.
+    # mailbox - one call silencing an unbounded set.
     if not key or key in ("|", "row:||") or (kind == "thread" and key.endswith("|")):
         return {"ok": False, "error": "nothing identifiable to acknowledge"}
-    if body.get("on") is False:
+    if on is False:
         # LIFTED BY EVERY IDENTITY, not just the preferred one - the mirror of the bug that
         # `ack_identities` exists to fix, and the more infuriating half. Deleting only the
         # Message-ID key would leave a legacy `row:` ack in place, so the row would still
         # render acknowledged: the owner clicks to undo, the API answers ok, and nothing
         # changes. A write that reports success and does nothing is worse than one that
         # fails, because there is no second attempt.
-        ids = ack_identities(kind, body.get("message_id"), body.get("sender"),
-                             body.get("subject"), body.get("account"))
+        ids = ack_identities(kind, message_id, sender, subject, account)
         cur = conn.execute(
             "DELETE FROM acks WHERE kind = ? AND key IN (%s)" % ",".join("?" * len(ids)),
             (kind,) + tuple(ids))
@@ -549,10 +563,27 @@ def api_ack(conn, q, body=None):
         "INSERT INTO acks (kind, key, account, sender, subject, note, acked_at) "
         "VALUES (?,?,?,?,?,?,?) ON CONFLICT(kind, key) DO UPDATE SET "
         "note = excluded.note, acked_at = excluded.acked_at",
-        (kind, key, body.get("account"), body.get("sender"), body.get("subject"),
-         (body.get("note") or "").strip()[:400], db.now_iso()))
+        (kind, key, account, sender, subject, (note or "").strip()[:400], db.now_iso()))
     conn.commit()
     return {"ok": True, "kind": kind, "key": key, "acked": True}
+
+
+def api_ack(conn, q, body=None):
+    """Acknowledge (or un-acknowledge) an item. POST only.
+
+    `on: false` lifts it - an acknowledgement is a statement about attention, not a
+    deletion, and a mistaken one has to be reversible.
+
+    A thin wrapper over `record_ack`, deliberately. The first attempt at giving acks a
+    headless door copied this body into the new function, which would have produced two
+    implementations of the ack key derivation and the lift semantics - and every serious
+    defect in this project so far has been one concept spelled two ways in two places.
+    """
+    body = body or {}
+    return record_ack(conn, kind=body.get("kind") or "message",
+                      message_id=body.get("message_id"), sender=body.get("sender"),
+                      subject=body.get("subject"), account=body.get("account"),
+                      note=body.get("note"), on=body.get("on") is not False)
 
 
 # ------------------------------------------------------------- workflow actions

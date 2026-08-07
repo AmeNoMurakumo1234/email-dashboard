@@ -908,7 +908,10 @@ MESSAGE_FIELDS = frozenset((
     "importance", "message_id", "injection_signals", "to", "cc", "body_text", "web_link",
 ))
 
-RUN_FIELDS = frozenset(("run_date", "notes", "accounts", "messages", "steam_sales"))
+RUN_FIELDS = frozenset(("run_date", "notes", "accounts", "messages", "steam_sales",
+                        "acknowledgements"))
+
+ACK_FIELDS = frozenset(("kind", "message_id", "sender", "subject", "account", "note", "on"))
 
 ACCOUNT_FIELDS = frozenset((
     "account", "role", "status", "auth", "inbox_count", "fetched", "trashed", "kept",
@@ -941,6 +944,10 @@ def unknown_fields(data):
         for k in m:
             if k not in MESSAGE_FIELDS:
                 note(k, "message")
+    for a in (data or {}).get("acknowledgements") or []:
+        for k in a:
+            if k not in ACK_FIELDS:
+                note(k, "acknowledgement")
     return out
 
 def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=None,

@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.15.0 — acknowledgement has a door
+
+`INSERT INTO acks` appeared in exactly one place in the codebase: the dashboard's HTTP
+handler. **An acknowledgement could only be made by clicking in a browser.**
+
+That is fine for a person at a screen, and wrong for the operating model this plugin
+prescribes — the skill describes an agent that maintains the board day to day, and on a real
+deployment that agent is a scheduled task with no UI, no session and no browser. It could read
+the `acks` table only by opening the SQLite file directly, and it could not write one at all.
+
+The gap is not cosmetic, and what it *forces* is the point. Items get dealt with off-channel
+constantly — answered in a call, decided in a meeting, delegated verbally — while the mail
+thread shows nothing. A routine with no way to record that re-escalates the same item every
+run. So a parallel markdown ledger gets invented, and one install's policy file said so in as
+many words. Then two stores answer *"has the owner dealt with this?"*: the sweep reads the
+markdown and stays quiet, the dashboard reads the table and raises the item. Both are behaving
+correctly. The answers disagree.
+
+And the divergence runs the wrong way. The UI writes to the table and never the markdown; the
+routine writes the markdown and cannot write the table. So **off-channel resolutions — the one
+thing a mail tool can never infer, and therefore the most valuable thing a human can tell it —
+were exactly the ones that could only be recorded in the store the dashboard ignores.**
+
+### Added — two headless doors onto the same record
+
+```
+python dashboard/ack.py --subject "..." --sender "..." --note "answered on the call"
+python dashboard/ack.py --list
+python dashboard/ack.py --message-id "<abc@example.com>" --lift
+```
+
+and an `acknowledgements` array accepted by `ingest.py` alongside `messages`, so a sweep
+records what it *learned* in the same call that records what it *saw*. Both go through one
+implementation — the first draft of this copied the handler's body into the new function,
+which would have produced two spellings of the ack key derivation and the lift semantics, and
+every serious defect in this project so far has been one concept spelled twice.
+
+The `--note` is the part nothing can reconstruct later: **why** it is closed.
+
+### Added — `--import-md`, so the workaround can retire
+
+`python dashboard/ack.py --import-md <ledger.md> --dry-run` reads a markdown list of closed
+items and records each line it can match against a message in the store. Lines it cannot place
+are **named and refused, not invented** — an acknowledgement stored against an identity no row
+has would silence nothing and report success, which is the same failure one level up.
+
+Then the markdown becomes a human-readable export of the table rather than a second database
+that argues with it.
+
 ## 0.14.0 — the guard can say yes
 
 Two reported defects that turned out to be one problem. The auto-trash guard was refusing

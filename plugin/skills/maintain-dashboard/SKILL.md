@@ -181,6 +181,26 @@ list of stale ones.
 An acknowledged *thread* still yields a new item if something genuinely different arrives
 (a second notice, an escalation). Judge that on its content, not on the acknowledgement.
 
+**And write acknowledgements back — do not keep your own list.** Items get dealt with
+off-channel constantly: answered in a call, decided in a meeting, delegated verbally. The
+mail thread shows nothing, so without a record you will re-escalate the same item every run,
+and the obvious workaround — your own markdown file of closed items — creates a *second*
+answer to "has the owner dealt with this?" that the dashboard cannot see. Both stores then
+behave correctly and disagree.
+
+Off-channel resolutions are the most valuable thing a person can tell a mail tool, because
+it can never infer them. Put them in the table:
+
+```
+python dashboard/ack.py --subject "..." --sender "..." --note "answered on the call"
+python dashboard/ack.py --list
+python dashboard/ack.py --import-md <your-old-ledger.md> --dry-run
+```
+
+or send an `acknowledgements` array in the same `ingest.py` call that records what you saw,
+so the run records what it *learned* alongside what it *found*. The `--note` is the part
+nothing else can reconstruct later: **why** it is closed.
+
 ## Writing rules
 
 The dashboard can lock a sender to auto-trash. The guard is
