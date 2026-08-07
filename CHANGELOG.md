@@ -1,5 +1,92 @@
 # Changelog
 
+## 0.11.2 — dates that mean what they say
+
+### Fixed — a historical batch belongs to the days it happened on
+
+Ingesting a backfill put all of it into **today**, so a year of old mail joined today's
+summary and a refund notice from last September was reported as this morning's news. The
+message viewer had the same fault from the other end: it showed the sweep date rather than
+the arrival date.
+
+- **`ingest.py --by-arrival`** stages one run per arrival day — the run that would have
+  found the message. Mail with **no readable date is refused**, not filed under today,
+  because guessing is exactly how a year-old message becomes today's news.
+- The viewer shows the arrival date, and still names the sweep date when the two differ.
+  Reading something eleven months late is a real fact about the tool.
+
+Worth naming why this survived: the calendar had already been keyed on arrival since 0.5.2
+and looked correct throughout. One view had been fixed and the others had not — and the
+fixed one was the one being watched.
+
+### Added — `ingest.py --no-open-items`
+
+History is not a to-do list. A year-deep backfill would land scores of nine-month-old
+`action-needed` entries on the standing list — on its first read, which is the read that
+decides whether anyone opens it again.
+
+Reported as **suppressed**, never as zero: "opened: 0 because nothing needed a person" and
+"opened: 0 because we were told not to look" are different facts.
+
+### Added — `intake.py plan --days`
+
+So a one-year intake does not page a decade of UID space. The batches page by UID and
+`--days` bounds by date, so the plan **asks the mailbox** which UID the window starts at
+rather than deriving it — UIDs do not advance evenly with time, and a quiet December and a
+busy March consume the same span at very different rates.
+
+### Fixed — layout
+
+- **The gap between the record and the scoreboard.** The band's last column was flexible,
+  which put a large empty bordered area between two panels — and that reads as something
+  that failed to render, not as spare room. Every column hugs its content now and the band
+  packs left, so the leftover is ordinary page background at the edge.
+- **The record is the column that yields** when the band is tight, because it can scroll
+  sideways and the tile cannot. With a year of history its natural width outgrew the row
+  and grid took the space from the scoreboard instead, wrapping its text into a tower
+  taller than everything else in the band.
+- **The two attention panels stretch to a common height.** Side by side at different
+  heights, one of them looks broken.
+- **Account status scrollbars hidden**, as everywhere else here — and the horizontal one was
+  only showing because the vertical one had narrowed the box enough to make the chips
+  overflow. A scrollbar caused by a scrollbar.
+- **"could not load" on the scoreboard** is now "needs a dashboard restart", with the reason.
+  The overwhelmingly likely cause is a browser holding new static files while the process
+  answering them predates the endpoint, and the fix is a restart rather than a bug report.
+
+## 0.11.1 — acknowledged items, sticky headers, and a tile that explained nothing
+
+### Fixed — an item you had already dismissed should not reappear as a task
+
+`backfill_open_items` never looked at the acks table, so it seeded the standing list with
+mail the owner had already acknowledged — the tool arguing with its own record of their
+judgment. A `--since` window cannot catch that: the item is recent, it is just already
+handled. On a real store the corrected version skips 16 of 21.
+
+The distinction it was fumbling stays: an ack says **seen**, and seeing is not doing, so
+acknowledging does **not** close an open item. But opening one for mail already dismissed is
+wrong, and **both states are now visible** — the row carries an `acknowledged` badge, and the
+viewer no longer promises the message "will stop being surfaced" while the open list goes on
+surfacing it. That copy was simply false.
+
+### Fixed — sticky panel headers
+
+They had a background but not the geometry: the panel's 18px top padding left an uncovered
+band above the header, and its 22px side padding left one down each edge, so rows scrolled
+visibly through the gaps. The scroller gives up its top padding and the header carries it,
+stretching over the horizontal padding with negative margins. `.panel h2` also outspecifies
+`.sticky`, which is why one panel kept leaking after the other was fixed.
+
+### Fixed — the side column explained nothing
+
+A legend divorced from its chart is a list of words, so it is back inside the record. The
+scoreboard tile says on its face what it counts, and can no longer render as a title over an
+empty box when its fetch fails — silence looking like a result, in the one place this project
+argues hardest against it.
+
+The record is wider, and says **"57 days"** rather than "57 runs": it is keyed on arrival, so
+each square is a day mail came in, and calling those runs overstates how often the tool ran.
+
 ## 0.11.0 — room to work, and a number that measures the outcome
 
 ### Changed — the chrome gives the mail back its screen
