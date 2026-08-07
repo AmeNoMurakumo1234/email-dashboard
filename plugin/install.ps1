@@ -12,7 +12,18 @@
 param(
     [int]    $Port      = 9770,
     [switch] $NoAutostart,
-    [switch] $Uninstall
+    [switch] $Uninstall,
+    # -Upgrade: for an install updated by copying a new version over the old one, which is
+    # the obvious thing to do and does not re-run this script. Config files added by the
+    # newer version therefore never appeared - concepts.local.json was simply absent, and
+    # the check that needed it reported "not exercised" rather than failing. Files that
+    # should have gone did not go either: a stale tools/secrets.py survived an overlay and
+    # shadowed the stdlib module a new backend had started importing.
+    #
+    # So: seed anything missing, remove anything retired, run the database migrations, and
+    # touch nothing else - no autostart changes, no server restart, no existing config
+    # overwritten.
+    [switch] $Upgrade
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,7 +58,24 @@ if ($Uninstall) {
     return
 }
 
-Write-Host "`nEmail Routine Dashboard - install" -ForegroundColor Cyan
+Write-Host "`nEmail Routine Dashboard - $(if ($Upgrade) { 'upgrade' } else { 'install' })" -ForegroundColor Cyan
+
+# FILES RETIRED BY LATER VERSIONS. An overlay upgrade cannot delete what it no longer
+# ships, so retired files linger and keep working - which is how tools/secrets.py went on
+# shadowing the standard library's `secrets` module after being renamed to credstore.py.
+$Retired = @(
+    'tools\secrets.py'
+)
+$removedAny = $false
+foreach ($rel in $Retired) {
+    $path = Join-Path $App $rel
+    if (Test-Path $path) {
+        Remove-Item $path -Force
+        Say "removed retired file: $rel" 'Yellow'
+        $removedAny = $true
+    }
+}
+if ($Upgrade -and -not $removedAny) { Say "no retired files to remove" }
 
 # --- 1. Python -------------------------------------------------------------------
 $py = (Get-Command python -ErrorAction SilentlyContinue)
@@ -113,6 +141,15 @@ try {
     & python -c "import db; db.init_db(); print('ok')" | Out-Null
     Say "schema created (no mail data)" 'Green'
 } finally { Pop-Location }
+
+if ($Upgrade) {
+    Write-Host "`nUpgrade complete." -ForegroundColor Cyan
+    Write-Host "  Config seeded, retired files removed, database migrated."
+    Write-Host "  Autostart and the running dashboard were left alone - restart it to pick"
+    Write-Host "  up the new code."
+    Write-Host ""
+    return
+}
 
 # --- 4. Autostart -------------------------------------------------------------------
 Write-Host "`nAutostart" -ForegroundColor Cyan

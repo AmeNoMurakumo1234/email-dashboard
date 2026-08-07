@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS messages (
     account      TEXT NOT NULL,
     sender       TEXT,
     subject      TEXT,
-    msg_date     TEXT,
+    msg_date     TEXT,                          -- exactly as the run wrote it (ISO, RFC 2822, or absent)
+    msg_day      TEXT,                          -- derived YYYY-MM-DD; what the calendar is allowed to trust
     disposition  TEXT NOT NULL,                 -- trashed / surfaced / kept
     category     TEXT,                          -- the raw label as the run wrote it
     concept      TEXT,                          -- canonical concept (concepts.py); 'unmapped' if unknown
@@ -206,9 +207,119 @@ def init_db():
         if "concept" not in mcols:
             conn.execute("ALTER TABLE messages ADD COLUMN concept TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_concept ON messages(concept)")
+
+        # msg_day: the calendar used to key on run_date, so an intake of months of existing
+        # mail rendered as ONE tile - a single run covering the better part of a year. The
+        # arrival date was stored all along and queried nowhere.
+        if "msg_day" not in mcols:
+            conn.execute("ALTER TABLE messages ADD COLUMN msg_day TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_day ON messages(msg_day)")
+        _backfill_msg_day(conn)
+
+        # THREAD ACK KEYS CHANGED SHAPE, so the ones already stored have to move with them.
+        #
+        # A thread key used to be sender|shape and is now account|shape - because a thread is
+        # a subject, not a person, and the old form gave every participant in one
+        # conversation a separate key. Left alone, every acknowledgement made before the
+        # change would simply stop matching: the item would quietly return to the attention
+        # list with no indication that a decision had been lost.
+        #
+        # Rewritable because the acks table already stores the account, sender and subject
+        # each key was derived from. Idempotent: a key that already has the new shape is
+        # recomputed to itself. Runs on every init, so an install that upgrades by overlay
+        # rather than by installer still gets it.
+        _migrate_thread_ack_keys(conn)
+
         conn.commit()
     finally:
         conn.close()
+
+
+def _backfill_msg_day(conn):
+    """Derive msg_day for rows written before the column existed. Idempotent."""
+    try:
+        rows = list(conn.execute(
+            "SELECT id, msg_date, run_date FROM messages WHERE msg_day IS NULL"))
+    except sqlite3.Error:
+        return 0
+    if not rows:
+        return 0
+    unparsed = 0
+    for row_id, raw, run_date in rows:
+        day = msg_day(raw, None)
+        if day is None:
+            # Fall back to the run date rather than leaving a hole - a row with no day at
+            # all would vanish from the calendar, which is a silent loss. Counted and
+            # reported, because "we guessed for N rows" is a claim that should be visible.
+            day = run_date
+            if (raw or "").strip():
+                unparsed += 1
+        conn.execute("UPDATE messages SET msg_day = ? WHERE id = ?", (day, row_id))
+    note = f"  derived msg_day for {len(rows)} row(s)"
+    if unparsed:
+        note += f"; {unparsed} had an unparseable msg_date and fell back to the run date"
+    print(note)
+    return len(rows)
+
+
+def _migrate_thread_ack_keys(conn):
+    """Recompute thread ack keys with the current rule. Returns how many moved."""
+    try:
+        rows = list(conn.execute(
+            "SELECT key, account, sender, subject FROM acks WHERE kind = 'thread'"))
+    except sqlite3.Error:
+        return 0                                  # no acks table yet: nothing to move
+    if not rows:
+        return 0
+    # Imported here, not at module scope: db.py is imported BY server.py, and importing it
+    # back at the top would be a cycle.
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from server import ack_key                    # noqa: PLC0415
+
+    moved = 0
+    for old_key, account, sender, subject in rows:
+        new_key = ack_key("thread", None, sender, subject, account)
+        if not new_key or new_key == old_key or new_key.endswith("|"):
+            continue
+        # An acknowledgement already at the new key wins; this one is a duplicate of a
+        # decision already recorded, so drop it rather than overwrite the newer note.
+        exists = conn.execute(
+            "SELECT 1 FROM acks WHERE kind = 'thread' AND key = ?", (new_key,)).fetchone()
+        if exists:
+            conn.execute("DELETE FROM acks WHERE kind = 'thread' AND key = ?", (old_key,))
+        else:
+            conn.execute("UPDATE acks SET key = ? WHERE kind = 'thread' AND key = ?",
+                         (new_key, old_key))
+        moved += 1
+    if moved:
+        print(f"  migrated {moved} thread acknowledgement(s) to the subject-scoped key")
+    return moved
+
+
+def msg_day(raw, fallback=None):
+    """The calendar day a message ARRIVED, as YYYY-MM-DD, or the fallback.
+
+    WHY THIS IS NOT A ONE-LINER. `msg_date` is stored exactly as the run wrote it, and runs
+    do not agree: a live store holds ISO dates, RFC 2822 dates ("Wed, 5 Aug 2026 06:06:25
+    -0500"), and NULLs, all in the same column. Grouping on the raw value - or on its first
+    ten characters - buckets those RFC rows under "Wed, 5 Aug" and produces a calendar that
+    looks plausible and is wrong, which is the failure this project keeps meeting.
+
+    So the raw value is KEPT and a normalised day is derived beside it, exactly as `concept`
+    sits beside `category`. The raw history is evidence and is not thrown away; the derived
+    column is what queries are allowed to trust.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return fallback
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-" and s[:4].isdigit():
+        return s[:10]                                   # already ISO, or ISO-prefixed
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(s).date().isoformat()
+    except Exception:
+        return fallback                                 # unparseable: say so by not guessing
 
 
 def now_iso():
@@ -363,11 +474,15 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
             # for-12-concepts defect this closes.
             conn.execute(
                 "INSERT INTO messages "
-                "(run_id, run_date, account, sender, subject, msg_date, disposition, "
-                "category, concept, reason, importance, message_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "(run_id, run_date, account, sender, subject, msg_date, msg_day, "
+                "disposition, category, concept, reason, importance, message_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, run_date, m.get("account"), m.get("sender"), m.get("subject"),
-                 m.get("msg_date"), m.get("disposition"), m.get("category"),
+                 m.get("msg_date"),
+                 # Normalised on WRITE, falling back to the run date so every row has a
+                 # day the calendar can group on and none silently vanish from it.
+                 msg_day(m.get("msg_date"), run_date),
+                 m.get("disposition"), m.get("category"),
                  concept_of(m.get("category")),
                  m.get("reason"), m.get("importance"),
                  (m.get("message_id") or "").strip() or None),

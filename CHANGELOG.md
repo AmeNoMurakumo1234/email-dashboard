@@ -1,5 +1,88 @@
 # Changelog
 
+## 0.5.2 — four things the dashboard stated confidently and got wrong
+
+From a defect report written by using the tool rather than reading it. Every item below was
+reproduced here before it was fixed.
+
+### Fixed — acknowledging a thread silenced one person in it
+
+A thread key included the **sender**, so every participant in one conversation got a distinct
+key. Acknowledging a four-participant thread acknowledged exactly one quarter of it: the API
+returned `ok`, the row rendered as acknowledged, the item disappeared — and everyone else's
+messages kept arriving. Acking was O(participants), and the participant set grows *after* you
+act, so a busy thread could never be fully acknowledged.
+
+**A thread is a subject, not a person.** The key is now the subject shape scoped to the
+mailbox. The trade-off is stated in the code and runs the other way — two senders whose
+subjects reduce to the same shape now share a thread — which is the less bad error only
+because it is *visible* the moment you act, where the old failure was silent. The real fix is
+a thread id from `References`/`In-Reply-To`, and the store does not carry one yet.
+
+Existing acknowledgements are migrated automatically, since the acks table already stores the
+account, sender and subject each key was derived from. Left alone they would simply have
+stopped matching, quietly returning handled items to the attention list.
+
+### Fixed — the same bug was splitting the repeat-collapsing view
+
+`subject_shape()` had no rule for `Re:` / `Fwd:`, so an original and its own replies did not
+share a shape **even from one sender**. That function also feeds the repeats view — the one
+whose comment calls it *the drowning mechanism* — so a notice was being split from its own
+follow-ups. One missing rule, two features quietly wrong. Reply and forward prefixes are now
+stripped as a chain (`Re: Re: Fwd:` is one match), in several languages, and the colon is
+required so "Re-engineering the process" is untouched.
+
+### Fixed — "not found in this mailbox" when the tool never reached the mailbox
+
+One branch collapsed two conditions that mean opposite things: the tool searched and the
+message is genuinely absent, and the tool **could not run at all** — no app registration, no
+token, bad config. On an install where the fetcher cannot connect, every row reported the mail
+as absent while it sat in the inbox untouched, and the UI added *"trashed mail is recoverable
+for about 30 days"* on top — inviting the reader to conclude it had been deleted and might be
+gone.
+
+Two false statements about someone's data, in the reassuring direction, from a lookup that
+never happened. The branches are now separate: an unreachable backend says *"could not reach
+the mailbox — the message may still be there"*, surfaces the `detail` that was always captured
+and never shown, and **never prints the retention line**, which is an inference no search
+earned.
+
+### Fixed — a backfill collapsed onto a single day
+
+`msg_date` was stored from the beginning and queried nowhere — `run_date` appeared 61 times in
+the server, `msg_date` zero. So an onboarding intake, which triages months of existing mail in
+one session, rendered as **one tile**. The single most valuable thing a new user wants to see
+is the shape of what they have been missing, and it was exactly what the view could not show.
+
+The record now keys on when mail **arrived** (`?by=swept` asks the other question). This is
+not the one-line `GROUP BY` it looks like: `msg_date` holds ISO dates, RFC 2822 dates and
+NULLs in the same column, and grouping on the raw text buckets `Wed, 5 Aug 2026 ...` under its
+weekday. The day is derived on write into `msg_day` — raw value kept as evidence, derived
+value trusted by queries, exactly as `concept` sits beside `category` — and backfilled for
+existing rows.
+
+### Fixed — `doctor` sent people down a road that dead-ends
+
+It called `connect()` and reported whatever threw last, so an install with no app registration
+was told to run `auth-ms` — which cannot work without the registration, and for which there is
+already a good specific error one step further on. `doctor` now validates configuration first
+and reports the **first** thing wrong rather than the last thing that threw, including
+"provider is graph, which this tool does not speak". With no accounts at all it says it checked
+nothing rather than reporting `0 of 0`.
+
+### Added — `install.ps1 -Upgrade`
+
+Upgrading by copying a new version over the old one is the obvious thing to do and does not
+re-run the installer, so config files a later version added never appeared — `concepts.local
+.json` was simply absent, and the check needing it reported "not exercised" rather than
+failing. Files a later version retired never left either: a stale `tools/secrets.py` survived
+an overlay and went on shadowing the standard library module a newer backend had started
+importing.
+
+`-Upgrade` seeds what is missing, removes what is retired from an explicit manifest, and runs
+the database migrations. It touches no existing config, no autostart entry, and does not
+restart anything.
+
 ## 0.5.1 — the injection guard was not wired into the Graph backend
 
 ### Fixed — a guard that could not fire, for a whole release

@@ -314,7 +314,24 @@ def ack_key(kind, message_id=None, sender=None, subject=None, account=None):
         return "row:%s|%s|%s" % (
             (account or "").strip().lower(), _sender_key(sender) or "",
             " ".join((subject or "").split()).lower())
-    return "%s|%s" % (_sender_key(sender) or "", subject_shape(subject))
+    # A THREAD IS A SUBJECT, NOT A PERSON. The sender used to be part of this key, so every
+    # participant in a conversation got a distinct thread key: acknowledging a thread
+    # silenced exactly one person in it, the API returned ok, the row rendered as
+    # acknowledged, and everyone else's messages kept arriving. Acking was O(participants),
+    # and the participant set grows after you act - so a busy thread could never be fully
+    # acknowledged. It never errored; it reported success.
+    #
+    # THE TRADE-OFF, stated because it is real and it runs the other way. Without the
+    # sender, two unrelated senders whose subjects reduce to the same shape - "your
+    # statement is ready" from two banks - now share a thread key, so acking one marks the
+    # other. That is the LESS bad error only because it is visible: both rows change on
+    # screen the moment you act, where the old failure was silent. It is scoped per account
+    # to keep one mailbox's threads out of another's.
+    #
+    # THE REAL FIX IS A THREAD ID, not a reconstruction from subject text. RFC 5322 gives
+    # one in References / In-Reply-To, and both Graph and IMAP expose it; the store does not
+    # carry it yet. When it does, this should key on that and fall back to the shape.
+    return "%s|%s" % ((account or "").strip().lower(), subject_shape(subject))
 
 
 def annotate_acks(conn, msgs):
@@ -326,7 +343,8 @@ def annotate_acks(conn, msgs):
     for m in msgs:
         km = ack_key("message", m.get("message_id"), m.get("sender"), m.get("subject"),
                      m.get("account"))
-        kt = ack_key("thread", None, m.get("sender"), m.get("subject"))
+        kt = ack_key("thread", None, m.get("sender"), m.get("subject"),
+                     m.get("account"))
         m["ack_key_message"], m["ack_key_thread"] = km, kt
         m["acked"] = bool(km in acked_msg or kt in acked_thread)
     return msgs
@@ -418,7 +436,10 @@ def api_ack(conn, q, body=None):
         return {"ok": False, "error": "kind must be 'message' or 'thread'"}
     key = ack_key(kind, body.get("message_id"), body.get("sender"), body.get("subject"),
                   body.get("account"))
-    if not key or key in ("|", "row:||"):
+    # An empty SHAPE is the dangerous case, not an empty key. "me@example.com|" would be a
+    # perfectly well-formed thread key that matches every subject-less message in that
+    # mailbox - one click silencing an unbounded set.
+    if not key or key in ("|", "row:||") or (kind == "thread" and key.endswith("|")):
         return {"ok": False, "error": "nothing identifiable to acknowledge"}
     if body.get("on") is False:
         conn.execute("DELETE FROM acks WHERE kind = ? AND key = ?", (kind, key))
@@ -1164,24 +1185,37 @@ def api_sender_rule(conn, q, body=None):
 
 
 def api_calendar(conn, q):
-    """One cell per run day: volume, and what the day was mostly ABOUT.
+    """One cell per day: volume, and what the day was mostly ABOUT.
 
     The run history was a dropdown of dates - the least evocative possible rendering of
     everything this lane has done. As a grid it shows at a glance the quiet stretches, the
     spikes, and the weeks something was escalating: patterns no single run report can
     express and no table makes visible.
+
+    KEYED ON WHEN MAIL ARRIVED, not on when a sweep ran (?by=swept for the other question).
+    Both dates were stored from the beginning and only run_date was ever queried, so an
+    onboarding intake - which triages months of existing mail in one session - rendered as
+    a SINGLE tile, one run covering most of a year. The one thing a new user most wants to
+    see, the shape of what they have been missing, was the one thing the view could not
+    show. It was not a missing column; it was the wrong column.
+
+    msg_day is derived on write rather than parsed here, because the raw msg_date is not
+    one format: a live store holds ISO dates, RFC 2822 dates and NULLs in the same column,
+    and grouping on the raw text buckets "Wed, 5 Aug 2026 ..." under its weekday.
     """
+    by = (q.get("by") or ["arrived"])[0]
+    col = "run_date" if by == "swept" else "COALESCE(msg_day, run_date)"
     days = rows(conn.execute(
-        "SELECT run_date, COUNT(*) n, "
+        "SELECT %s day, COUNT(*) n, "
         "SUM(disposition='trashed') trashed, "
         "SUM(disposition IN ('kept','surfaced','saved')) kept "
-        "FROM messages GROUP BY run_date ORDER BY run_date"))
+        "FROM messages GROUP BY day ORDER BY day" % col))
     # dominant concept per day, so the tint means something rather than being decoration
     dom = {}
     for r in conn.execute(
-            "SELECT run_date, COALESCE(concept,'unmapped') c, COUNT(*) n FROM messages "
-            "GROUP BY run_date, c ORDER BY run_date, n DESC"):
-        dom.setdefault(r["run_date"], concepts.key_of(r["c"]))
+            "SELECT %s day, COALESCE(concept,'unmapped') c, COUNT(*) n FROM messages "
+            "GROUP BY day, c ORDER BY day, n DESC" % col):
+        dom.setdefault(r["day"], concepts.key_of(r["c"]))
     # What actually earned attention that day - the reason to click a cell.
     #
     # The importance column has NINE spellings (action-needed, family, security, financial,
@@ -1196,23 +1230,28 @@ def api_calendar(conn, q):
         "SELECT key FROM acks WHERE kind = 'thread'")}
     act, open_act = collections.Counter(), collections.Counter()
     for r in conn.execute(
-            "SELECT run_date, account, sender, subject, message_id FROM messages WHERE "
-            "importance IN (%s)" % ",".join("?" * len(ATTENTION)), ATTENTION):
-        act[r["run_date"]] += 1
+            "SELECT %s day, account, sender, subject, message_id FROM messages WHERE "
+            "importance IN (%s)" % (col, ",".join("?" * len(ATTENTION))), ATTENTION):
+        act[r["day"]] += 1
         # Acknowledged counts as handled at either scope - a thread ack covers this run's
         # instance of a recurring notice just as a message ack covers the single email.
         done = (ack_key("message", r["message_id"], r["sender"], r["subject"],
                         r["account"]) in acked_msg
-                or ack_key("thread", None, r["sender"], r["subject"]) in acked_thread)
+                or ack_key("thread", None, r["sender"], r["subject"],
+                           r["account"] if "account" in r.keys() else None)
+                in acked_thread)
         if not done:
-            open_act[r["run_date"]] += 1
+            open_act[r["day"]] += 1
     for d in days:
-        d["concept"] = dom.get(d["run_date"], "other")
-        d["action"] = act.get(d["run_date"], 0)
+        # `run_date` is kept in the payload so the client can keep selecting a RUN when a
+        # cell is clicked; `day` is what the cell represents.
+        d["run_date"] = d["day"]
+        d["concept"] = dom.get(d["day"], "other")
+        d["action"] = act.get(d["day"], 0)
         # What is still OUTSTANDING is the number that should drive the colour: a day whose
         # items that have all been seen is a day you can stop looking at.
-        d["action_open"] = open_act.get(d["run_date"], 0)
-    return {"days": days,
+        d["action_open"] = open_act.get(d["day"], 0)
+    return {"days": days, "by": "swept" if by == "swept" else "arrived",
             "totals": {"runs": len(days),
                        "messages": sum(d["n"] for d in days),
                        "kept": sum(d["kept"] for d in days),
@@ -1223,6 +1262,19 @@ def api_calendar(conn, q):
 # amounts, invoice/order numbers, counts. Without this, "Payment due 08/21" and "Payment due
 # 09/21" look like two unrelated messages, which is precisely how a repeating notice hides.
 _SHAPE_SUBS = [
+    # REPLY AND FORWARD PREFIXES COME OFF FIRST, and the whole chain in one pass - "Re: Fwd:
+    # Re: " is one match, not three. This has to run BEFORE the punctuation rule below, which
+    # strips the colons and would leave "re" and "fwd" looking like ordinary leading words.
+    #
+    # Leaving them in split a thread from its own replies, and - because subject_shape also
+    # feeds api_repeats - split a notice from its own follow-ups in the very view whose
+    # comment calls it THE DROWNING MECHANISM. One missing rule, two features quietly wrong.
+    #
+    # The colon is required, so "Re-engineering the process" and "Fwd Thinking Ltd" are
+    # untouched. Non-English prefixes included because a mailbox is not monolingual; single
+    # letters ("R:", "I:") are deliberately NOT, since they collide with real subjects.
+    (re.compile(r"^(?:\s*(?:re|ref|fw|fwd|aw|wg|sv|vb|vs|vl|rv|tr|antw|doorst|enc|res|odp|pd"
+                r"|ynt|ilt|回复|轉寄)\s*(?:\[\d+\]|\(\d+\))?\s*:)+\s*", re.I), " "),
     (re.compile(r"https?://\S+"), " "),
     (re.compile(r"\b\d{1,3}(?:[,.]\d{3})*(?:\.\d\d)?\b"), " "),   # amounts / counts
     (re.compile(r"[#$£€]\s*\S+"), " "),
@@ -1530,9 +1582,30 @@ def api_message(conn, q):
              "--message-id", mid, "--out", tmp],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=60)
-        if p.returncode != 0 or not os.path.exists(tmp):
-            return {"ok": False, "error": "not found in this mailbox",
+        # TWO OUTCOMES THAT MEAN OPPOSITE THINGS, and they used to share one message.
+        #
+        # "not found in this mailbox" was returned whether the tool searched and found
+        # nothing, or never ran at all - no app registration, no token, bad config, network
+        # down. On an install where the fetcher cannot connect, every row reported the mail
+        # as absent while it sat in the inbox untouched, and the UI added "trashed mail is
+        # recoverable for about 30 days" on top, inviting the reader to conclude it had been
+        # deleted and might be gone. Two false statements about someone's data, in the
+        # reassuring direction, from a lookup that never happened.
+        #
+        # `find` exits 3 for a real miss and something else when it could not get that far,
+        # so the two are distinguishable. `detail` was always captured here and never shown;
+        # on the unreachable path it is the only thing that says what actually went wrong.
+        if p.returncode == 3:
+            return {"ok": False, "reason": "not_found", "searched": True,
+                    "error": "not found in this mailbox",
                     "detail": (p.stderr or "")[:400]}
+        if p.returncode != 0 or not os.path.exists(tmp):
+            return {"ok": False, "reason": "unreachable", "searched": False,
+                    "error": "could not reach the mailbox - the message may still be there",
+                    "detail": ((p.stderr or "") + (p.stdout or ""))[-600:],
+                    "hint": "run `python tools/mailtool.py doctor` to see why the mail "
+                            "backend is failing. Nothing was searched, so this says "
+                            "nothing about whether the message still exists."}
         raw = open(tmp, "rb").read()
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "timed out talking to the mail server"}

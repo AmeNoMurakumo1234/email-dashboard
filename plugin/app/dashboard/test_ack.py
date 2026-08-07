@@ -19,6 +19,69 @@ BASE = "http://127.0.0.1:9770"
 fails = []
 
 
+def check(name, cond, detail=""):
+    print(("  ok   " if cond else "  FAIL"), name, ("" if cond else f"-> {detail}"))
+    if not cond:
+        fails.append(name)
+
+
+# ---------------------------------------------------------------------------------------
+# A THREAD IS A SUBJECT, NOT A PERSON - and this half needs no server, so it always runs.
+#
+# The thread key used to include the sender, so every participant in one conversation got
+# a distinct key: acknowledging a thread silenced exactly one person in it while everyone
+# else kept arriving. It never errored - the API returned ok and the row rendered as
+# acknowledged. Reported from a live four-participant thread.
+#
+# The reply prefix was the second half of the same bug: subject_shape() had no rule for
+# Re:/Fwd:, so an original and its own replies did not share a shape even from one sender.
+# That also feeds api_repeats, which meant the repeat-collapsing view was splitting a
+# notice from its own follow-ups.
+#
+# This is the test the report said was missing: "the current behaviour is consistent with a
+# test that only ever passed one sender."
+# ---------------------------------------------------------------------------------------
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import server                                                        # noqa: E402
+
+print("=== a multi-participant thread is ONE thread ===")
+THREAD_SUBJECT = "Response Requested: vendor seat audit"
+PARTICIPANTS = [
+    ("colleague-a@example.com", THREAD_SUBJECT),
+    ("someone@example.com", f"Re: {THREAD_SUBJECT}"),
+    ("colleague-c@partner.example", f"RE: {THREAD_SUBJECT}"),
+    ("colleague-d@personal.example", f"Re: Re: Fwd: {THREAD_SUBJECT}"),
+    ("colleague-a@example.com", f"AW: {THREAD_SUBJECT}"),
+]
+keys = {server.ack_key("thread", None, s, subj, "me@example.com")
+        for s, subj in PARTICIPANTS}
+check(f"{len(PARTICIPANTS)} participants and reply forms share ONE thread key",
+      len(keys) == 1, keys)
+
+check("a different subject is a different thread",
+      server.ack_key("thread", None, "a@b.example", "Something else", "me@example.com")
+      not in keys)
+check("the same thread in another mailbox is scoped separately",
+      server.ack_key("thread", None, "colleague-a@example.com", THREAD_SUBJECT,
+                     "other@example.com")
+      not in keys)
+
+print("\n=== subject_shape strips reply prefixes (this also feeds api_repeats) ===")
+base = server.subject_shape("Notice: your statement is ready")
+for prefix in ("Re: ", "RE: ", "Fwd: ", "FW: ", "AW: ", "SV: ", "Re: Re: Fwd: ", "Re[2]: "):
+    check(f"{prefix!r} collapses onto the original",
+          server.subject_shape(prefix + "Notice: your statement is ready") == base,
+          server.subject_shape(prefix + "Notice: your statement is ready"))
+
+print("\n=== ...and does not eat subjects that merely start with those letters ===")
+for subject, must_keep in (("Re-engineering the onboarding flow", "engineering"),
+                           ("Fwd Thinking Ltd invoice", "fwd thinking"),
+                           ("Resolution required: outage", "resolution"),
+                           ("Review: Q3 numbers", "review")):
+    shaped = server.subject_shape(subject)
+    check(f"{subject!r} survives", must_keep in shaped, shaped)
+
+
 def post(payload, headers=None, origin=None):
     req = urllib.request.Request(BASE + "/api/ack", method="POST",
                                  data=json.dumps(payload).encode())
@@ -108,8 +171,12 @@ from server import ack_key                                          # noqa: E402
 
 # Same MARKER on both sides, or the shapes differ for a reason that has nothing to do with
 # the date and amount this case is actually about.
+# The account is part of a thread key now (a thread is a subject, scoped to the mailbox
+# it landed in), so it must be passed here exactly as api_ack passes it from the payload -
+# otherwise this recomputes a different key and reports a scope failure that is really a
+# harness failure.
 next_month = ack_key("thread", None, ROW["sender"],
-                     f"{MARKER} Payment due 09/21 for $99.99")
+                     f"{MARKER} Payment due 09/21 for $99.99", ROW.get("account"))
 if next_month not in keys:
     fails.append("next month's notice, with a different date and amount, would NOT be "
                  "covered by the acknowledgement - the thread scope is not collapsing")

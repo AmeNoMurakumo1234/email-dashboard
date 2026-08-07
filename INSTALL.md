@@ -28,6 +28,23 @@ This creates `config/protected.local.json`, an empty database, and a hidden VBS 
 your Startup folder so the dashboard is running whenever you log in. It adds **no
 mailboxes** - that is deliberate.
 
+### Upgrading an existing install
+
+Copying a new version over the old one is the obvious thing to do, and it is not enough:
+config files a later version added never appear, and files a later version retired never
+leave. Both failures are silent — a check that needs a missing config reports "not
+exercised" rather than failing, and a retired module keeps being imported.
+
+After overlaying the new files, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File plugin\install.ps1 -Upgrade
+```
+
+It seeds any config the new version expects, removes anything retired, and runs the
+database migrations. It does **not** touch your existing config, your autostart entry, or
+the running dashboard — restart that yourself to pick up the new code.
+
 ## 2. Add a mailbox
 
 Run the **onboard-mailbox** skill and follow it with your agent. It covers app passwords

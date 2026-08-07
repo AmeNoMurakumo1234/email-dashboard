@@ -810,9 +810,20 @@ async function mvLoad(wantHtml) {
     return;
   }
   if (!res.ok) {
-    $("#mvText").textContent =
-      (res.error || "could not retrieve") +
-      "\n\nTrashed mail is recoverable for about 30 days; older items may be gone.";
+    // THE RETENTION NOTE IS AN INFERENCE ABOUT THE MAIL, so it is only earned when a search
+    // actually happened. It used to print on every failure, including the one where the
+    // backend never connected - telling someone their message was probably deleted, about
+    // mail sitting in their inbox. An absence is only reportable by an instrument that ran.
+    let msg = res.error || "could not retrieve";
+    if (res.searched) {
+      msg += "\n\nTrashed mail is recoverable for about 30 days; older items may be gone.";
+    } else {
+      if (res.hint) msg += "\n\n" + res.hint;
+      // detail was captured server-side from the very beginning and never displayed, so the
+      // one thing that said what actually broke was the one thing nobody could see.
+      if (res.detail) msg += "\n\n--- what the mail tool reported ---\n" + res.detail.trim();
+    }
+    $("#mvText").textContent = msg;
     return;
   }
 

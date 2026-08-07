@@ -263,11 +263,62 @@ def find_trash(conn):
 
 # ---------------------------------------------------------------- commands
 
+def config_problems(acct):
+    """Everything wrong with this account's CONFIG, before any socket is opened.
+
+    doctor used to call connect() and report whatever exception came back last. On an
+    install with no app registration that produced "no OAuth tokens - run: auth-ms", which
+    is a real error and useless advice: auth-ms cannot work without ms_client_id, and
+    mailtool already has a good specific message for exactly that case. The user was sent
+    one step down a road that dead-ends at the very next command.
+
+    Report the FIRST thing that is wrong, not the last thing that threw.
+    """
+    problems = []
+    if not acct.get("email"):
+        problems.append("no \"email\" key - the config uses `email`, not `address`")
+    provider = (acct.get("provider") or "").strip()
+    if not provider:
+        problems.append("no \"provider\" - use \"microsoft\" for Outlook/365, or any other "
+                        "value for password-based IMAP")
+    if provider == "microsoft" and not (config().get("ms_client_id") or "").strip():
+        problems.append(
+            "provider is \"microsoft\" but there is no top-level \"ms_client_id\". "
+            "Microsoft sign-in needs an Entra app registration - ONE per deployment. "
+            "Without it `auth-ms` cannot run either, so authenticating is not the next "
+            "step; creating or obtaining the registration is.")
+    if provider == "graph":
+        problems.append(
+            "provider is \"graph\", which this tool does not speak - use tools/msgraph.py "
+            "for Graph accounts.")
+    elif not (acct.get("imap_host") or "").strip():
+        problems.append("no \"imap_host\" - required for every account this tool connects, "
+                        "including Microsoft ones (outlook.office365.com)")
+    return problems
+
+
 def cmd_doctor(args):
-    targets = [a for a in config()["accounts"] if not args.account or a["email"].lower() == args.account.lower()]
+    targets = [a for a in config()["accounts"] if not args.account or a.get("email", "").lower() == args.account.lower()]
     results, ok_count = [], 0
+    if not targets:
+        # A zero here is a claim like any other. "connected 0 / total 0" is
+        # indistinguishable from a clean run unless it says there was nothing to check.
+        print(json.dumps({
+            "connected": 0, "total": 0, "accounts": [],
+            "error": "NO ACCOUNTS CONFIGURED - this checked nothing, it is not an all-clear",
+            "fix": "add a mailbox to config/accounts.json (see the onboard-mailbox skill)",
+        }, indent=2))
+        return 1
     for acct in targets:
-        addr = acct["email"]
+        addr = acct.get("email") or "(no email key)"
+        problems = config_problems(acct)
+        if problems:
+            # Never open a socket on a config that cannot work: the connection error would
+            # describe a symptom of the misconfiguration rather than the misconfiguration.
+            results.append({"account": addr, "status": "NOT CONFIGURED",
+                            "error": problems[0],
+                            "all_problems": problems if len(problems) > 1 else None})
+            continue
         try:
             conn, method = connect(addr)
             typ, data = conn.select("INBOX", readonly=True)
