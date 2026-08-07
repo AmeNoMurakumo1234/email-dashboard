@@ -109,6 +109,10 @@ def main():
                     help="ADD to this run_date instead of replacing it. Replace is right "
                          "for a daily sweep and wrong for a batched intake, where every "
                          "batch would otherwise have to re-send everything already sent.")
+    ap.add_argument("--no-open-items", action="store_true", dest="no_open_items",
+                    help="ingest the mail but do not open standing to-do items - for a "
+                         "HISTORICAL batch, where nine-month-old action-needed is history "
+                         "rather than a task")
     ap.add_argument("--strict", action="store_true",
                     help="refuse to write if any label resolves to UNMAPPED or any row "
                          "lacks a Message-ID - for an intake, where finding out later "
@@ -240,7 +244,11 @@ def main():
 
     run_id, replaced, open_stats = db.ingest_run(
         run_date, accounts=accounts, messages=messages, notes=data.get("notes"),
-        steam_sales=steam_sales, append=args.append)
+        steam_sales=steam_sales, append=args.append,
+        open_items=not args.no_open_items)
+    if args.no_open_items:
+        print("opened  0/%d  <- SUPPRESSED for a historical batch; nothing was added to "
+              "the standing list" % len(messages), file=sys.stderr)
     print(json.dumps({
         "ok": True, "run_id": run_id, "run_date": run_date,
         "accounts": len(accounts),
@@ -263,8 +271,12 @@ def main():
         # again. Both printed, because "0 opened" is a claim - it means either nothing
         # needed a person today or the carry-forward is not running, and those must not
         # look the same.
+        # SUPPRESSED IS NOT THE SAME AS NONE. "opened: 0" from a run that was told not to
+        # open anything, and "opened: 0" from a run where nothing needed a person, are
+        # different facts - and this project's whole argument is that a zero is a claim.
         "opened": open_stats["opened"],
         "still_open_seen": open_stats["still_open_seen"],
+        "open_items_suppressed": open_stats["suppressed"],
     }))
     return 0
 

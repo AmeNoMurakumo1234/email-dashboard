@@ -844,11 +844,17 @@ def unknown_fields(data):
     return out
 
 def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=None,
-               append=False):
+               append=False, open_items=True):
     """
     Idempotent per run_date: REPLACES any existing data for that day. Returns
     (run_id, replaced_count, open_stats) where open_stats is
-    {"opened": n, "still_open_seen": n} - the carry-forward, RETURNED rather than left in a
+    {"opened": n, "still_open_seen": n, "suppressed": bool}
+
+    `open_items=False` ingests the mail WITHOUT opening standing to-do items. For a
+    historical batch that is the correct behaviour and not an optimisation: a year of old
+    `action-needed` would arrive as scores of stale entries on a list whose whole argument
+    is that its contents are live. History is history. Anything in it that is genuinely
+    still outstanding comes back on its own, because whoever wants it is still asking. - the carry-forward, RETURNED rather than left in a
     module global for a caller to fish out. Reported by ingest because a carry-forward that
     quietly opened nothing looks exactly like a mailbox with nothing outstanding.
 
@@ -946,7 +952,8 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
                  *recipients_of(m, m.get("account")),
                  (m.get("body_text") or None), (m.get("web_link") or None)),
             )
-        opened, still_open = carry_open_items(conn, messages, run_date)
+        opened, still_open = (carry_open_items(conn, messages, run_date)
+                              if open_items else (0, 0))
         conn.commit()
     finally:
         conn.close()
@@ -960,7 +967,8 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
 
     # BOTH numbers, always. A caller that only learns what it wrote cannot tell a clean
     # append from a replace that silently deleted the previous nine batches.
-    return run_id, replaced, {"opened": opened, "still_open_seen": still_open}
+    return run_id, replaced, {"opened": opened, "still_open_seen": still_open,
+                              "suppressed": not open_items}
 
 
 if __name__ == "__main__":

@@ -1574,8 +1574,19 @@ async function loadScoreboard() {
     // NEVER LEAVE THE BOX EMPTY. Returning silently here left a titled panel with nothing
     // in it, which reads as a broken feature rather than as a failed request - and the one
     // thing this whole tool argues is that silence is not an answer.
+    // SAY WHICH FAILURE IT IS. "could not load" is true and useless: the overwhelmingly
+    // likely cause is a dashboard that picked up new static files while still running the
+    // old server process, so the endpoint genuinely does not exist yet - and the fix is a
+    // restart, not a bug report.
     body.className = "score-body unmeasured";
-    body.textContent = "could not load";
+    body.textContent = "needs a dashboard restart";
+    why.hidden = false;
+    why.onclick = () => alert(
+      "This panel asks the server for /api/scoreboard and got nothing back.\n\n"
+      + "Almost always that means the page is newer than the running server: the browser "
+      + "loaded the updated files, but the process answering them was started before this "
+      + "feature existed.\n\nStop the dashboard and start it again, then reload.\n\n"
+      + "(" + (e && e.message ? e.message : String(e)) + ")");
     return;
   }
   const why = $("#scoreWhy");

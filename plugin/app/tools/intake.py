@@ -88,33 +88,59 @@ def cmd_plan(args, run=None):
     # newest UID is. UIDs are not dense - deletions leave gaps - so the count says nothing
     # about the highest UID, and a plan built by dividing the count alone would stop short
     # of the top of the mailbox and silently never fetch the newest mail.
+    days = str(args.days or 0)
     probe = run(["fetch", "--account", args.account, "--mailbox", args.mailbox,
-                 "--days", "0", "--limit", "1", "--no-snippets"])
+                 "--days", days, "--limit", "1", "--no-snippets"])
     total = probe.get("total_matched") or 0
     if not total:
-        print("nothing to intake: the mailbox reports 0 messages")
+        print("nothing to intake: %s reports 0 messages"
+              % ("the mailbox" if days == "0" else "that window"))
         return 1
     top = max((int(m["uid"]) for m in probe.get("messages", []) if m.get("uid")), default=0)
+
+    # WHERE THE WINDOW STARTS, asked of the mailbox rather than guessed. `--days` bounds the
+    # intake by DATE, but the batches page by UID - so the plan needs the UID of the oldest
+    # message inside the window, which is the one at offset total-1. Computing a UID from a
+    # date any other way means assuming UIDs advance evenly with time, and they do not:
+    # a quiet December and a busy March consume the same UID space at very different rates.
+    lo = 1
+    if args.days:
+        oldest = run(["fetch", "--account", args.account, "--mailbox", args.mailbox,
+                      "--days", days, "--limit", "1", "--offset", str(total - 1),
+                      "--no-snippets"])
+        uids = [int(m["uid"]) for m in oldest.get("messages", []) if m.get("uid")]
+        if uids:
+            lo = min(uids)
+        else:
+            print("could not find the oldest message in that window; planning the whole "
+                  "mailbox instead", file=sys.stderr)
     if not top:
         print("could not read a UID from the newest message; cannot plan a UID-ranged "
               "intake for this mailbox", file=sys.stderr)
         return 2
 
-    batches, lo = [], 1
+    batches = []
+    # `start` is kept because the loop below CONSUMES lo. Without it the state file and the
+    # printed summary both reported the range as top+1:top - a window of nothing - while the
+    # batches themselves were correct. A plan that misdescribes itself is how a resume gets
+    # debugged against the wrong numbers.
+    start, lo = lo, lo
     # Windows over the UID SPACE, not over the message count. A window can come back light
     # (or empty) where messages were deleted years ago; that is correct and is reported,
     # not treated as an error.
-    span = max(1, top // max(1, -(-total // args.batch)))
+    span = max(1, (top - start + 1) // max(1, -(-total // args.batch)))
     while lo <= top:
         hi = min(top, lo + span - 1)
         batches.append({"n": len(batches) + 1, "uid_range": "%d:%d" % (lo, hi),
                         "state": "pending", "fetched": None, "ingested": None})
         lo = hi + 1
     state = {"account": args.account, "mailbox": args.mailbox, "total_at_plan": total,
-             "highest_uid": top, "batch_size": args.batch, "batches": batches}
+             "highest_uid": top, "lowest_uid": start, "days": args.days,
+             "batch_size": args.batch, "batches": batches}
     save_state(args.account, state)
-    print("planned %d batch(es) over UIDs 1:%d for %d message(s) in %s"
-          % (len(batches), top, total, args.account))
+    print("planned %d batch(es) over UIDs %d:%d for %d message(s) in %s%s"
+          % (len(batches), start, top, total, args.account,
+             "" if not args.days else " (last %d days)" % args.days))
     print("state: %s" % _state_path(args.account))
     print("\nnext: python tools/intake.py next --account %s --out batch.json" % args.account)
     return 0
@@ -214,6 +240,8 @@ def main(argv=None, run=None):
     p.add_argument("--account", required=True)
     p.add_argument("--mailbox", default="INBOX")
     p.add_argument("--batch", type=int, default=200)
+    p.add_argument("--days", type=int, default=0,
+                   help="bound the intake to the last N days (0 = the whole mailbox)")
     p.set_defaults(fn=cmd_plan)
 
     p = sub.add_parser("next", help="fetch the next unfinished batch")

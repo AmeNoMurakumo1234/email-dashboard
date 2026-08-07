@@ -64,9 +64,10 @@ class IntakeResumes(unittest.TestCase):
     def tearDown(self):
         intake.STATE_DIR = self._real
 
-    def plan(self, batch=25):
-        return intake.cmd_plan(Args(account=self.acct, mailbox="INBOX", batch=batch),
-                               run=self.box)
+    def plan(self, batch=25, days=0):
+        return intake.cmd_plan(
+            Args(account=self.acct, mailbox="INBOX", batch=batch, days=days),
+            run=self.box)
 
     def nxt(self):
         n = len([f for f in os.listdir(self.out)])
@@ -155,6 +156,69 @@ class IntakeResumes(unittest.TestCase):
         self.box = FakeMailbox([], total=0)
         self.assertEqual(self.plan(), 1)
         self.assertIsNone(intake.load_state(self.acct))
+
+
+
+class BoundedByDate(unittest.TestCase):
+    """A one-year intake must not page eleven years of UID space.
+
+    The batches page by UID and `--days` bounds by DATE, so the plan has to ASK the mailbox
+    which UID the window starts at. Deriving it from the date arithmetically would assume
+    UIDs advance evenly with time, and they do not - a quiet December and a busy March
+    consume the same span at very different rates.
+    """
+
+    def setUp(self):
+        self._real = intake.STATE_DIR
+        intake.STATE_DIR = Path(tempfile.mkdtemp())
+        self.acct = "owner@example.com"
+
+    def tearDown(self):
+        intake.STATE_DIR = self._real
+
+    def test_the_plan_starts_at_the_windows_oldest_uid(self):
+        # A mailbox of five hundred, of which only the newest hundred fall
+        # inside the window the owner asked for.
+        box = WindowedMailbox(all_uids=list(range(1, 501)), window_uids=list(range(401, 501)))
+        intake.cmd_plan(Args(account=self.acct, mailbox="INBOX", batch=50, days=365),
+                        run=box)
+        state = intake.load_state(self.acct)
+        self.assertEqual(state["lowest_uid"], 401,
+                         "planning from UID 1 would re-fetch four hundred messages that "
+                         "are outside the window the owner asked for")
+        first = int(state["batches"][0]["uid_range"].split(":")[0])
+        last = int(state["batches"][-1]["uid_range"].split(":")[1])
+        self.assertEqual((first, last), (401, 500))
+
+    def test_without_days_it_still_plans_the_whole_mailbox(self):
+        """The control: bounding must be something you ask for, not the new default."""
+        box = WindowedMailbox(all_uids=list(range(1, 501)), window_uids=list(range(401, 501)))
+        intake.cmd_plan(Args(account=self.acct, mailbox="INBOX", batch=50, days=0), run=box)
+        self.assertEqual(intake.load_state(self.acct)["lowest_uid"], 1)
+
+
+class WindowedMailbox:
+    """A mailbox where `--days` matches only some of the messages."""
+
+    def __init__(self, all_uids, window_uids):
+        self.all, self.window = sorted(all_uids), sorted(window_uids)
+
+    def __call__(self, argv):
+        def flag(name):
+            return argv[argv.index(name) + 1] if name in argv else None
+
+        rng = flag("--uid-range")
+        if rng:
+            lo, hi = (int(x) for x in rng.split(":"))
+            got = [u for u in self.all if lo <= u <= hi]
+            return {"total_matched": len(got),
+                    "messages": [{"uid": str(u), "subject": "s"} for u in got]}
+        pool = self.window if flag("--days") not in (None, "0") else self.all
+        offset = int(flag("--offset") or 0)
+        # mailtool's offset skips the N NEWEST, so offset total-1 is the oldest.
+        chosen = pool[len(pool) - 1 - offset] if offset else pool[-1]
+        return {"total_matched": len(pool),
+                "messages": [{"uid": str(chosen), "subject": "s"}]}
 
 
 if __name__ == "__main__":

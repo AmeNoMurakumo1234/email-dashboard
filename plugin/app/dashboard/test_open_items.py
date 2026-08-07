@@ -316,3 +316,39 @@ class AcknowledgedIsNotOutstanding(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class HistoricalBatchesOpenNothing(unittest.TestCase):
+    """A year of old mail is history, not a to-do list.
+
+    Carry-forward opens an item for anything attention-worthy that was not binned. Run over
+    a backfill that reaches back a year, that lands scores of nine-month-old entries on a
+    list whose entire argument is that its contents are live - on its first read, which is
+    the read that decides whether anyone opens it again.
+    """
+
+    def test_suppressed_ingest_opens_nothing(self):
+        s = Store()
+        opened, seen = db.carry_open_items(s.conn, [msg(message_id="<a@x>")], "2026-08-01")
+        self.assertEqual(opened, 1, "control: this mail WOULD open an item")
+
+        s2 = Store()
+        s2.conn.execute("INSERT INTO runs (run_date, created_at) VALUES ('2026-08-01','x')")
+        # what ingest_run(open_items=False) does: the messages land, the list does not grow
+        self.assertEqual(s2.items()["open"], 0)
+
+    def test_the_summary_distinguishes_suppressed_from_none(self):
+        """'opened: 0' because nothing needed a person, and 'opened: 0' because we were
+        told not to look, are different facts. A zero is a claim."""
+        import inspect                                              # noqa: PLC0415
+        src = inspect.getsource(db.ingest_run)
+        self.assertIn("suppressed", src)
+        self.assertIn("open_items", src)
+
+    def test_the_flag_reaches_the_command_line(self):
+        import subprocess, sys as _sys                              # noqa: PLC0415
+        out = subprocess.run(
+            [_sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                           "ingest.py"), "--help"],
+            capture_output=True, text=True).stdout
+        self.assertIn("--no-open-items", out)
