@@ -585,7 +585,7 @@ def _link_hosts(body):
 
 def cmd_fetch(args, gc):
     addr = args.account
-    select = ["id", "internetMessageId", "subject", "from", "toRecipients",
+    select = ["id", "internetMessageId", "subject", "from", "toRecipients", "ccRecipients",
               "receivedDateTime", "isRead", "hasAttachments", "webLink"]
     if not args.no_snippets:
         select.append("bodyPreview")
@@ -639,6 +639,7 @@ def cmd_fetch(args, gc):
                 "message_id": (m.get("internetMessageId") or "").strip(),
                 "from": _addr_of(m.get("from")),
                 "to": ", ".join(_addr_of(t) for t in (m.get("toRecipients") or [])),
+                "cc": ", ".join(_addr_of(t) for t in (m.get("ccRecipients") or [])),
                 "subject": m.get("subject") or "",
                 "date": m.get("receivedDateTime") or "",
                 "size": None,          # not exposed on the message list; not worth a call each

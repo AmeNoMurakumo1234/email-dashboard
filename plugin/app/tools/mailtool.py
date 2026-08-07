@@ -416,6 +416,10 @@ def cmd_fetch(args):
             "message_id": (msg.get("Message-ID") or "").strip(),
             "from": _decode_header(msg.get("From")),
             "to": _decode_header(msg.get("To")),
+            # Cc as well as To: being one of twenty on a Cc line is not the same as
+            # being asked, and the difference decides whether a "bot" sender is
+            # noise or is assigning you work.
+            "cc": _decode_header(msg.get("Cc")),
             "subject": _decode_header(msg.get("Subject")),
             "date": msg.get("Date", ""),
             "size": int(size_m.group(1)) if size_m else None,

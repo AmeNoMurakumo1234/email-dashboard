@@ -10,6 +10,7 @@ Stdlib only (sqlite3) — no third-party dependencies.
 """
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -57,7 +58,10 @@ CREATE TABLE IF NOT EXISTS messages (
     concept      TEXT,                          -- canonical concept (concepts.py); 'unmapped' if unknown
     reason       TEXT,
     importance   TEXT,                          -- action-needed / family / financial / security / info
-    injection_signals TEXT                      -- JSON list; mail addressed to the TRIAGER, not to a person
+    injection_signals TEXT,                     -- JSON list; mail addressed to the TRIAGER, not to a person
+    recipients   TEXT,                          -- To + Cc, as received
+    recipient_count INTEGER,                    -- how many people got it; NULL = unknown
+    addressed_directly INTEGER                  -- 1 = this mailbox is in To (not merely Cc); NULL = unknown
 );
 
 CREATE INDEX IF NOT EXISTS idx_msg_run     ON messages(run_id);
@@ -93,6 +97,32 @@ CREATE TABLE IF NOT EXISTS acks (
     note        TEXT,
     acked_at    TEXT NOT NULL,
     PRIMARY KEY (kind, key)
+);
+
+-- WHAT THE OWNER HAS TOLD US, AND WHAT WE ASKED TO GET IT.
+--
+-- The tool ships with its rules file full of "fill this in" and never asks. This table is
+-- the other half of fixing that: questions generated from the mailbox (dashboard/
+-- questions.py) are answered here, and the answer is written into the rules file or the
+-- protected list from these rows.
+--
+-- The QUESTION is stored beside the answer on purpose. A rule recovered a year later reads
+-- as an arbitrary preference unless you can still see what was asked and what evidence
+-- prompted it - the difference between a rule its owner chose and a rule someone guessed.
+-- `evidence` is the JSON the question carried at the time, frozen: re-deriving it later
+-- would show today's mailbox, not the one the answer was about.
+--
+-- Answering is also what stops a question being asked again, so an unanswered question and
+-- a question answered "leave it alone" must be distinguishable. They are: the second has a
+-- row.
+CREATE TABLE IF NOT EXISTS answers (
+    question_id TEXT PRIMARY KEY,            -- questions.generate() id, stable across runs
+    kind        TEXT,                        -- question kind, for reporting
+    question    TEXT,                        -- verbatim, as asked
+    evidence    TEXT,                        -- JSON, frozen at ask time
+    answer      TEXT,                        -- what the owner said
+    answered_at TEXT NOT NULL,
+    written_to  TEXT                         -- file the answer was applied to, once applied
 );
 
 -- WHICH HOSTS EACH SENDER NORMALLY LINKS TO.
@@ -179,15 +209,27 @@ CREATE INDEX IF NOT EXISTS idx_host_flags_open ON host_flags(verdict);
 """
 
 
-def connect():
-    conn = sqlite3.connect(DB_PATH)
+def connect(path=None):
+    """Open the store. `path` exists so a caller can say WHICH store.
+
+    It used to be unconditionally DB_PATH, which meant a test could not build a fixture
+    store without opening the real one - `init_db()` on a temp file was simply not
+    expressible, and the obvious workaround (reassigning the module global) leaks into
+    whatever runs next in the same process. An argument is the honest version of that.
+    """
+    conn = sqlite3.connect(path or DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
-def init_db():
-    conn = connect()
+def init_db(conn=None):
+    """Create and migrate the schema. Pass a connection to initialise a store you opened.
+
+    Idempotent either way: every statement here is CREATE IF NOT EXISTS or an ALTER guarded
+    by a PRAGMA check, because it runs on every start against stores of every age.
+    """
+    conn = conn or connect()
     try:
         conn.executescript(SCHEMA)
         # Lightweight migrations for columns added after a DB already existed.
@@ -223,6 +265,17 @@ def init_db():
         # tried to steer the triager" never showed it.
         if "injection_signals" not in mcols:
             conn.execute("ALTER TABLE messages ADD COLUMN injection_signals TEXT")
+
+        # WAS THIS SENT TO YOU, OR TO TWO HUNDRED PEOPLE? Both fetchers captured To from
+        # the start and ingest discarded it, so the tool could not tell a bot's blast from
+        # the same bot assigning you work. A reported rule would have binned GitHub
+        # mentions and task assignments, unread, on exactly that mistake.
+        for col, decl in (("recipients", "TEXT"), ("recipient_count", "INTEGER"),
+                          ("addressed_directly", "INTEGER")):
+            if col not in mcols:
+                conn.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_direct "
+                     "ON messages(addressed_directly)")
 
         # THREAD ACK KEYS CHANGED SHAPE, so the ones already stored have to move with them.
         #
@@ -328,6 +381,39 @@ def msg_day(raw, fallback=None):
         return parsedate_to_datetime(s).date().isoformat()
     except Exception:
         return fallback                                 # unparseable: say so by not guessing
+
+
+_ADDR = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
+
+
+def recipients_of(msg, account):
+    """(recipients, count, addressed_directly) for one message.
+
+    WHY THIS COLUMN EXISTS, and it is the most valuable thing in the store that was not in
+    it. Both fetchers captured `To` from the beginning and ingest threw it away, so the tool
+    could not tell the difference between a message sent to YOU and the same sender's blast
+    to two hundred people. That distinction is what separates "this sender is a bot, bin it"
+    from "this sender is a bot EXCEPT when it is assigning you work" - and a reported rule
+    would have binned GitHub mentions and task assignments, unread, on exactly that mistake.
+
+    `addressed_directly` means the mailbox appears in **To**, not merely in Cc: being one of
+    twenty on a Cc line is not the same as being asked. Errors fall toward NOT-direct, so a
+    rule built on this under-claims rather than over-claims.
+    """
+    to = str(msg.get("to") or "")
+    cc = str(msg.get("cc") or "")
+    joined = ", ".join(x for x in (to, cc) if x.strip())
+    addrs = _ADDR.findall(joined)
+    # No parseable address is not zero recipients - it is an unknown, and a count of 0 would
+    # read as "sent to nobody", which is a claim we have no evidence for.
+    count = len(set(a.lower() for a in addrs)) if addrs else None
+    acct = (account or "").strip().lower()
+    direct = None
+    if acct:
+        direct = 1 if acct in (a.lower() for a in _ADDR.findall(to)) else 0
+        if not to.strip():
+            direct = None                        # nothing to judge from
+    return (joined[:400] or None), count, direct
 
 
 def now_iso():
@@ -510,8 +596,8 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
                 "INSERT INTO messages "
                 "(run_id, run_date, account, sender, subject, msg_date, msg_day, "
                 "disposition, category, concept, reason, importance, message_id, "
-                "injection_signals) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "injection_signals, recipients, recipient_count, addressed_directly) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, run_date, m.get("account"), m.get("sender"), m.get("subject"),
                  m.get("msg_date"),
                  # Normalised on WRITE, falling back to the run date so every row has a
@@ -522,7 +608,8 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
                  m.get("reason"), m.get("importance"),
                  (m.get("message_id") or "").strip() or None,
                  json.dumps(m["injection_signals"]) if m.get("injection_signals")
-                 else None),
+                 else None,
+                 *recipients_of(m, m.get("account"))),
             )
         conn.commit()
     finally:

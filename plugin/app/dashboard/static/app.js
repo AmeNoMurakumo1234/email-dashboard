@@ -173,6 +173,8 @@ async function init() {
     if (e.target.id === "acctModal") $("#acctModal").hidden = true;
   });
   $("#prClose").addEventListener("click", () => { $("#protModal").hidden = true; });
+  $("#qClose").addEventListener("click", () => { $("#qModal").hidden = true; });
+  $("#qOpen").addEventListener("click", openQuestions);
   $("#prSave").addEventListener("click", saveProtectedNames);
   document.addEventListener("click", (e) => {
     if (e.target.id === "protModal") $("#protModal").hidden = true;  // backdrop dismiss
@@ -1246,13 +1248,35 @@ async function loadSetup() {
   let data;
   try { data = await get("/api/setup"); } catch (e) { return; }
   const panel = $("#setupPanel");
+  const steps = data.steps || [];
+  const outstanding = steps.filter((s) => !s.done);
   // Hidden the moment every step is done. A setup panel that lingers becomes furniture,
   // and furniture is not read - so its presence has to keep meaning something.
-  panel.hidden = !!data.complete;
-  if (data.complete) return;
+  //
+  // `data.complete` is NOT the test, because it deliberately ignores advisory steps. If it
+  // were, "tell the tool how you work" would be reported by the server and rendered by
+  // nothing - the shape of bug this project keeps finding, where the honest answer exists
+  // and no one is shown it. When only advisory steps remain the panel stays, but quietly:
+  // one line and a button, not a block of unfinished business.
+  const onlyAdvisory = outstanding.length > 0 && outstanding.every((s) => s.advisory);
+  panel.hidden = outstanding.length === 0;
+  panel.classList.toggle("setup-advisory", onlyAdvisory);
 
-  const steps = data.steps || [];
-  const left = steps.filter((s) => !s.done).length;
+  // The header entry point is driven from the same payload and is INDEPENDENT of whether
+  // the setup panel is showing. On this install the rules step reported itself done - no
+  // placeholders left, no high-weight question - while thirteen real questions waited
+  // behind a panel that had already hidden itself. Correct, and unreachable.
+  const rulesStep = steps.find((s) => s.key === "rules");
+  const waiting = (rulesStep && rulesStep.questions_waiting) || 0;
+  const opener = $("#qOpen");
+  opener.hidden = !waiting;
+  opener.textContent = waiting === 1 ? "1 question" : `${waiting} questions`;
+  opener.title = "Questions generated from your own mail. Answering them is how this " +
+                 "tool learns your rules instead of assuming them.";
+
+  if (panel.hidden) return;
+
+  const left = outstanding.length;
   $("#setupCount").textContent =
     `(${steps.length - left} of ${steps.length} done)`;
 
@@ -1279,6 +1303,153 @@ async function loadSetup() {
     btn.textContent = "Fill in the protected list";
     btn.addEventListener("click", openProtectedEditor);
     wrap.appendChild(btn);
+  }
+
+  const rules = steps.find((s) => s.key === "rules" && !s.done);
+  if (rules && rules.questions_waiting) {
+    const btn = el("button", "btn setup-fix");
+    btn.textContent =
+      rules.questions_waiting === 1
+        ? "Answer 1 question about your mail"
+        : `Answer ${rules.questions_waiting} questions about your mail`;
+    btn.addEventListener("click", openQuestions);
+    wrap.appendChild(btn);
+  }
+}
+
+// ---------- elicitation: the tool asking, instead of assuming ----------
+
+async function openQuestions() {
+  const modal = $("#qModal");
+  const list = $("#qList");
+  $("#qStatus").textContent = "";
+  list.innerHTML = '<div class="muted">loading…</div>';
+  modal.hidden = false;
+  let data;
+  try {
+    data = await get("/api/questions?limit=6");
+  } catch (e) {
+    list.innerHTML = '<div class="muted">could not load questions</div>';
+    return;
+  }
+  const qs = data.questions || [];
+  // Say what is being withheld. "6 questions" above a list of 6 that is really 20 is the
+  // understatement this whole project keeps tripping over: correct, and read as complete.
+  $("#qMeta").textContent =
+    (data.total > qs.length
+      ? `showing ${qs.length} of ${data.total} — the rest keep for later`
+      : `${qs.length} question${qs.length === 1 ? "" : "s"}`) +
+    (data.answered ? ` · ${data.answered} already answered` : "");
+  list.innerHTML = "";
+  if (!qs.length) {
+    list.innerHTML =
+      '<div class="muted">Nothing to ask right now. New questions appear as your ' +
+      "mailbox changes.</div>";
+    return;
+  }
+  qs.forEach((q) => list.appendChild(questionCard(q)));
+}
+
+function questionCard(q) {
+  const card = el("div", "q-card");
+  const head = el("div", "q-question");
+  head.textContent = q.question;
+  card.appendChild(head);
+
+  if (q.why_it_matters) {
+    const why = el("div", "q-why");
+    why.textContent = q.why_it_matters;
+    card.appendChild(why);
+  }
+
+  // THE EVIDENCE IS THE POINT. Without it this is a checklist, and a checklist asking
+  // "how should we treat bots?" is unanswerable. With it the answer is recall.
+  const ev = el("div", "q-evidence");
+  ev.appendChild(evidenceOf(q.evidence));
+  card.appendChild(ev);
+
+  const opts = el("div", "q-options");
+  (q.options || []).forEach((o) => {
+    const b = el("button", "btn q-opt");
+    b.textContent = o;
+    b.addEventListener("click", () => answerQuestion(q, o, card));
+    opts.appendChild(b);
+  });
+  card.appendChild(opts);
+
+  // Free text always, even when there are options. Every option list here is a guess at
+  // the shape of an answer, and the answers worth most are the ones that did not fit.
+  const row = el("div", "q-free");
+  const box = el("input", "q-input");
+  box.type = "text";
+  box.placeholder = (q.options || []).length
+    ? "…or say it in your own words"
+    : "your answer";
+  const send = el("button", "btn");
+  send.textContent = "Save";
+  const submit = () => box.value.trim() && answerQuestion(q, box.value.trim(), card);
+  send.addEventListener("click", submit);
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submit();
+  });
+  row.appendChild(box);
+  row.appendChild(send);
+  card.appendChild(row);
+
+  const skip = el("button", "btn q-skip");
+  skip.textContent = "Not now";
+  // Skip does NOT record an answer - an unanswered question has to stay askable, and a
+  // "skip" stored as an answer is how a question disappears without ever being decided.
+  skip.addEventListener("click", () => card.remove());
+  card.appendChild(skip);
+  return card;
+}
+
+function evidenceOf(ev) {
+  const wrap = el("div", "q-ev-body");
+  if (!ev || typeof ev !== "object") return wrap;
+  Object.keys(ev).forEach((k) => {
+    const v = ev[k];
+    if (v === null || v === undefined || (Array.isArray(v) && !v.length)) return;
+    const line = el("div", "q-ev-line");
+    const label = el("span", "q-ev-k");
+    label.textContent = k.replace(/_/g, " ") + ": ";
+    line.appendChild(label);
+    const val = el("span", "q-ev-v");
+    val.textContent = Array.isArray(v)
+      ? v.map((x) => (typeof x === "object" ? JSON.stringify(x) : x)).join(" · ")
+      : String(v);
+    line.appendChild(val);
+    wrap.appendChild(line);
+  });
+  return wrap;
+}
+
+async function answerQuestion(q, answer, card) {
+  const status = $("#qStatus");
+  status.textContent = "saving…";
+  try {
+    const res = await fetch("/api/answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Dashboard": "1" },
+      body: JSON.stringify({
+        id: q.id,
+        kind: q.kind,
+        question: q.question,
+        evidence: q.evidence,
+        answer,
+        written_to: q.writes,
+      }),
+    }).then((x) => x.json());
+    if (!res.ok) throw new Error(res.error || "refused");
+    card.classList.add("q-answered");
+    card.innerHTML =
+      '<div class="q-question">' + esc(q.question) + "</div>" +
+      '<div class="q-answer">✓ ' + esc(answer) + "</div>";
+    status.textContent = `recorded — it will be applied to ${q.writes}`;
+    await loadSetup();
+  } catch (e) {
+    status.textContent = "could not save: " + e.message;
   }
 }
 

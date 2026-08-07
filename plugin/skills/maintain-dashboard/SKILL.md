@@ -1,6 +1,6 @@
 ---
 name: maintain-dashboard
-description: Use when running the daily email sweep, feeding the dashboard, or keeping it healthy - ingesting a run, rebuilding sender profiles, checking for senders that have gone quiet or started linking somewhere new, and honouring what the owner has acknowledged. The operating discipline for an agent that maintains this board day to day.
+description: Use when running the daily email sweep, feeding the dashboard, or keeping it healthy - ingesting a run, rebuilding sender profiles, checking for senders that have gone quiet or started linking somewhere new, honouring what the owner has acknowledged, and putting the questions the tool has generated from their own mail in front of them. The operating discipline for an agent that maintains this board day to day.
 ---
 
 # Maintaining the board
@@ -183,3 +183,32 @@ no, the guard is doing its job.
 Hold the question rather than guessing. Add it to the owner's questions file with the
 options you considered, and leave the mail alone until it is answered. One held question
 costs a day; one wrong deletion can cost something irreplaceable.
+
+## Every run: put the waiting questions in front of them
+
+`/api/questions` generates questions from the store — a sender with volume and no history of
+mattering, a category that has never needed them, mail addressed to them personally from a
+sender otherwise treated as noise. New ones appear as the mailbox changes; this is the drift
+mechanism, not a one-off setup step.
+
+**Mention them; do not wait to be asked.** Most people will not think to ask an email tool to
+interview them, and the ones who most need the rules written are the least likely to know
+they can. One line at the end of the daily report is enough:
+
+> *"Three questions waiting about senders I keep guessing on — want to do them now?"*
+
+Rules to keep while asking:
+
+- **Never invent an answer.** An unanswered question is a known gap; a guessed one becomes an
+  instruction that shapes every future run and reads exactly like a rule the owner chose.
+- **Ask in their order.** The generator ranks by what being wrong would cost, and the top of
+  that list is usually the one that stops mail from being lost rather than the one that
+  clears the most volume.
+- **Show the evidence with the question.** It is the whole reason these are answerable.
+- **Six is a sitting.** A panel that asks every day trains its reader to ignore the panel,
+  which is the failure this tool exists to prevent.
+
+Record answers with `POST /api/answer`, then `python tools/apply_answers.py` to see the
+proposed rule text and `--write` once they have looked at it. `--revert` removes every
+elicited rule in one gesture, so the offer to write is a cheap one to accept.
+

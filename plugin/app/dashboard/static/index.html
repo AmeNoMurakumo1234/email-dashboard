@@ -12,6 +12,11 @@
       <h1>📬 Email Routine Dashboard</h1>
       <span class="sub" id="subtitle">loading…</span>
     </div>
+    <!-- ALWAYS REACHABLE, not only during setup. The setup panel removes itself once the
+         install is sound, and the questions do not stop arriving when it does - a mailbox
+         keeps producing new senders. Behind the setup panel they would have been offered
+         on day one and never again. Hidden only when there is genuinely nothing to ask. -->
+    <button id="qOpen" class="btn q-open" type="button" hidden></button>
     <div class="run-picker">
       <label for="runSelect">Run</label>
       <select id="runSelect"></select>
@@ -213,6 +218,36 @@
         <div class="prot-foot">
           <span class="muted" id="prStatus"></span>
           <button id="prSave" class="btn" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WHAT THE TOOL STILL DOES NOT KNOW ABOUT YOU, ASKED FROM YOUR OWN MAILBOX.
+       The rules file shipped full of "fill this in" and nothing ever asked - so a user
+       could finish every setup step and still be reading dispositions derived from
+       nobody's judgment. Every question here carries the messages behind it, because a
+       question you can answer from memory in seconds is worth answering and a question
+       about policy in the abstract is not. -->
+  <div id="qModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="qTitle">
+      <div class="modal-head">
+        <div class="mv-titles">
+          <h3 id="qTitle">Questions from your mailbox</h3>
+          <div class="mv-meta" id="qMeta"></div>
+        </div>
+        <button id="qClose" class="btn" type="button">Close</button>
+      </div>
+      <div class="modal-body">
+        <p class="prot-help">
+          These are generated from what your mail has actually done, not from a checklist.
+          Answer what you can and close the rest — nothing here is required, and an answer
+          can be changed later. Your answers are recorded; the tool shows you the exact rule
+          text before it writes anything into your rules file.
+        </p>
+        <div id="qList"></div>
+        <div class="prot-foot">
+          <span class="muted" id="qStatus"></span>
         </div>
       </div>
     </div>

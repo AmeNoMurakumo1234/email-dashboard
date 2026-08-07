@@ -1,5 +1,105 @@
 # Changelog
 
+## 0.7.0 — onboarding that asks
+
+The tool shipped `rules-and-policies.md` with `_Fill this in._` in five places and
+`protected.example.json` full of placeholders. **It knew its rules were missing and it never
+asked for them.** You could complete every setup step and have a dashboard full of
+dispositions derived from judgment nobody chose. As the report put it: *even the whole
+questionnaire process should have been obvious out of the box without me asking for it.*
+
+### Added — questions generated from your own mailbox
+
+`dashboard/questions.py` and `GET /api/questions`. Not a checklist. A generic questionnaire
+is close to worthless — "how should we treat bots?" is unanswerable in the abstract — and
+what makes a question worth answering is the evidence attached to it, which this tool is the
+only thing in the room holding.
+
+Every question carries the rows behind it and is **ranked by what being wrong would cost**,
+not by volume:
+
+| kind | asks about |
+|---|---|
+| `personally_addressed` | a sender you treat as noise that sometimes asks *you* to act |
+| `sender_disposition` | volume with no history of ever mattering |
+| `escalation_contacts` | who must never be missed — arms the guard directly |
+| `concept_gap` | labels your runs use that belong to no concept, so they are invisible |
+| `concept_never_actioned` | a whole category that has never needed you |
+| `repeatedly_acknowledged` | something you keep dismissing by hand |
+| `mailbox_role` | what each mailbox is *for* |
+
+A message addressed to you personally and filed as bot noise outranks four hundred promos,
+because the promos being wrong is an annoyance and the other is lost work.
+
+**Senders whose mail is mostly money or security are asked about differently** — the stakes
+are stated, and "auto-trash it" is not offered first. Never having acted on a year of
+statements is not the same as that mail never mattering, and the evidence cannot tell those
+apart.
+
+### Added — recipients, so the most valuable question can be asked at all
+
+`to` and `cc` are now captured by both fetchers and stored, with a derived
+`addressed_directly` and `recipient_count`. Without them the tool cannot ask *"these three
+were addressed to you personally — same rule?"*, which is the question that stops a bots
+rule from binning work assigned to its owner.
+
+An install with no recipient data still gets the question: it also fires on subjects that
+ask a person to do something. **Unknown is stored as unknown, never as zero.**
+
+### Added — answers become rules, with a look first
+
+`tools/apply_answers.py`. Recording an answer and acting on it are different risks, so they
+are different programs. The default is a dry run; `--write` is the only thing that touches
+your file.
+
+Everything it writes lives inside one marked block, so prose above and below is never
+touched, re-running updates rather than duplicates, and `--revert` removes every elicited
+rule in one gesture with no residue. Each rule records the evidence and date it came from —
+a year later the file can still tell a rule you chose from a rule someone guessed.
+
+Answers that imply no rule are **reported, not dropped**. "It matters sometimes — keep asking
+me" is a real answer whose correct effect on the rules file is nothing at all.
+
+### Added — resumable intake for a mailbox with years in it
+
+`tools/intake.py`. Plan, fetch a batch, triage it, mark it done, resume tomorrow. It does not
+classify — a program that filled in dispositions with defaults would produce exactly the
+confident labels nobody chose that this release exists to remove.
+
+**Paged by UID range, not by offset.** Offset counts back from the newest message, so mail
+arriving or being deleted mid-intake shifts every later window and a message slides across a
+boundary and is never fetched by any batch — nothing errors, no count looks wrong, and the
+message is simply absent. A batch is retired only by an explicit `done`; a session killed
+between fetching and ingesting gets that batch offered again, because a duplicated row is
+visible and a skipped batch is not.
+
+### Added — a fourth setup step, and a permanent way back to it
+
+"Tell the tool how you work" joins the setup panel, outstanding while placeholders survive or
+a high-weight question is unanswered. It is **advisory**: the guard refuses rules while it is
+unset because binning a bank's mail is unrecoverable, but a tool that refuses to run until
+you finish a questionnaire is one nobody finishes installing.
+
+The dashboard header carries a question count whenever any are waiting — independent of the
+setup panel, which removes itself once the install is sound. Without that, questions would be
+offered on day one and never again, while the mailbox kept producing new ones.
+
+### Changed — onboarding asks which mail route you have, before writing any config
+
+A new Step 0: connector, app registration, IMAP app password, or "I don't know" — with what
+each costs. The connector is often the *only* route an organisation will sanction and it was
+the one route the skill never mentioned, so people were pushed toward the hardest path and
+some concluded the tool would not work for them at all. Answering (a) skips three steps.
+
+Both skills now offer the questions rather than waiting to be asked. Most people will not
+think to ask an email tool to interview them.
+
+### Fixed
+
+- `db.connect()` / `init_db()` take an optional path and connection. They previously always
+  opened the real store, so a fixture could not be built without touching live data.
+- The rules-file path had two independent lookups that could disagree; there is now one.
+
 ## 0.6.0 — the guarantees move to `ingest`, so they work without a fetcher
 
 Every safety property in this tool was bolted to the fetcher. Read-only was an `if` inside

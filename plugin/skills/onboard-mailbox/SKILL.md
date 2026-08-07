@@ -1,6 +1,6 @@
 ---
 name: onboard-mailbox
-description: Use when adding a mailbox to the Email Routine Dashboard for the first time, connecting an email account, setting up IMAP credentials, or when the dashboard reports that no accounts are configured. Walks the whole path - app password or OAuth, credential storage, connection test, first sweep - without ever putting a password in a file.
+description: Use when adding a mailbox to the Email Routine Dashboard for the first time, connecting an email account, setting up IMAP credentials, when the dashboard reports that no accounts are configured, or when someone wants the tool to learn their rules - "set up my email rules", "ask me the setup questions", "why is it filing things this way". Walks the whole path - which mail route they even have, app password or OAuth or a client connector, credential storage, connection test, first sweep, and the questions the tool generates from their own mailbox - without ever putting a password in a file.
 ---
 
 # Onboarding a mailbox
@@ -18,6 +18,38 @@ require handling a password directly, that step is wrong — stop and say so.
 For the same reason: **the owner creates the app password themselves**, in their own
 browser, signed into their own account. You tell them where to click; you do not do it for
 them and you do not need to see the result.
+
+## Step 0 — ask HOW they can reach this mailbox, before writing any config
+
+Ask this first, and offer the options out loud. Do not assume IMAP.
+
+> **How can you read this mailbox programmatically?**
+> **(a)** my AI client already has a mail connector for it
+> **(b)** I can create an app registration in Entra / Google Cloud
+> **(c)** IMAP with an app password
+> **(d)** I don't know
+
+**Why this comes first.** The connector is often the *only* route an organisation will
+sanction, and until now it was the one route this skill never mentioned — so people were
+pushed toward the hardest path and some concluded the tool would not work for them at all.
+Meanwhile IMAP is disabled by default in many Microsoft 365 tenants, usually right after a
+phishing incident, and it is an admin-only setting an ordinary employee can neither inspect
+nor change.
+
+On **(d)**, say what each costs in a sentence each:
+
+| route | what it costs | when it is right |
+|---|---|---|
+| **(a) connector** | nothing to set up; you pipe messages into `ingest.py` yourself | your client already lists a mail connector — check before doing anything else |
+| **(b) app registration** | 10 minutes, once, and an admin's consent if it is a work tenant | Microsoft 365, or IMAP is closed |
+| **(c) app password** | 2 minutes, needs 2-Step Verification on already | personal Gmail or Outlook.com |
+
+**(a) skips Steps 2–4 entirely.** Go straight to `dashboard/ingest.py`, which is a supported
+entry point, not a workaround: read its docstring for the JSON shape and pipe your messages
+in. The dashboard, the record, the acks, the protected guard and the injection labelling all
+work identically — **only the fetcher differs.**
+
+Say this before the owner spends twenty minutes on an app registration they did not need.
 
 ## Step 1 — decide what this mailbox is FOR
 
@@ -201,16 +233,66 @@ python tools/mailtool.py fetch --account <address> --days 2 --limit 200
 Then triage per the routine, write the run JSON, and ingest it. The dashboard is empty
 until a run is ingested — that is expected, not a fault.
 
+
+## Step 7 — ask the questions. Do not wait to be asked to ask.
+
+**This is not optional and it is not the owner's job to request it.** Onboarding is not
+finished when mail arrives; it is finished when the tool knows whose rules it is applying.
+Until then every disposition on the dashboard comes from a default nobody chose, and the
+shipped `rules-and-policies.md` still says `_Fill this in._` in five places.
+
+The tool generates the questions itself, from the mailbox it has just swept:
+
+```
+curl -s http://127.0.0.1:9770/api/questions
+```
+
+Each question arrives with the evidence behind it. **Ask them in the owner's own words, one
+at a time, with the evidence attached** — "you have dozens of messages from this sender and have
+never kept one; how should it be handled?" is answered in seconds, while "how should we
+treat bots?" is unanswerable and teaches them to skim.
+
+Record each answer as you get it:
+
+```
+curl -s -X POST http://127.0.0.1:9770/api/answer   -H "Content-Type: application/json" -H "X-Dashboard: 1"   -d '{"id":"<question id>","kind":"<kind>","question":"<verbatim>","answer":"<what they said>"}'
+```
+
+Then propose the rules and let them look before anything is written:
+
+```
+python tools/apply_answers.py            # shows exactly what WOULD be written
+python tools/apply_answers.py --write    # only after they have seen it
+```
+
+Three things to hold on to while doing this:
+
+- **Rank by what being wrong costs, not by volume.** A message addressed to them personally
+  and filed as bot noise outranks four hundred promos. The generator already orders them
+  this way; keep that order when you ask.
+- **An answer that implies no rule is a real answer.** "It matters sometimes — keep asking
+  me" is a decision. Record it; `apply_answers.py` correctly writes nothing for it and says
+  so rather than dropping it.
+- **Stop before it becomes noise.** Six is plenty for one sitting. The rest keep, and new
+  ones arrive as the mailbox changes.
+
+The dashboard shows a **question count in its header** whenever any are waiting, so an owner
+who prefers clicking to talking has the same route. Point it out — most people will not
+think to ask an email tool to interview them.
+
 ## What "done" looks like
 
 - `doctor` reports CONNECTED for the account, on two consecutive passes
 - `protected.local.json` names the people who matter, and `/api/whoami` no longer reports it unconfigured
 - one run has been ingested and the dashboard shows it at `http://127.0.0.1:9770`
 - **no password exists in any file, log, or shell history**
+- the owner has answered at least the high-weight questions, and `rules-and-policies.md`
+  no longer says `_Fill this in._` — a tool that has never asked anything is applying
+  somebody else's judgment to their mail
 
 ## If you are an agent doing this unattended
 
-Don't. Steps 3 and 5 need the owner: only they can create a credential, only they should
-type it, and only they know who counts as family. If they are not available, set up what you
+Don't. Steps 3, 5 and 7 need the owner: only they can create a credential, only they should
+type it, and only they know who counts as family, and nobody else can answer the questions in Step 7 — inventing answers to them is worse than leaving the rules empty, because a guessed rule is indistinguishable from a chosen one once it is in the file. If they are not available, set up what you
 can, say plainly which steps are outstanding, and stop — a mailbox that is half-onboarded
 and quietly filtering mail is worse than one that is not connected yet.

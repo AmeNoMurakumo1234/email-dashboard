@@ -851,8 +851,73 @@ def api_setup(conn, q):
         "action": "Sweep with tools/mailtool.py fetch, then ingest the run JSON.",
     })
 
+    # 4. THE ONE THE TOOL NEVER USED TO ASK FOR.
+    #
+    # Every step above could be green while the rules file still said "_Fill this in._" in
+    # five places, and the dashboard would be full of dispositions derived from nobody's
+    # judgment. Onboarding that reports itself finished in that state is lying about the
+    # only thing that makes the output mean anything: whose rules it is applying.
+    #
+    # Not done until BOTH: no shipped placeholders survive, and no high-weight question is
+    # still unanswered. The second half is what makes this step come back as the mailbox
+    # changes, rather than being a box ticked once on day one.
+    rules_path = RULES_FILE
+    placeholders = _rules_placeholders(rules_path)
+    try:
+        import questions                                            # noqa: PLC0415
+        pending, total = questions.generate(conn, rules_path=rules_path,
+                                            protected=prot["names"], limit=50)
+        heavy = [p for p in pending if p["weight"] >= 0.85]
+    except Exception as exc:                     # a broken generator must not hide the step
+        pending, total, heavy = [], 0, []
+        placeholders = placeholders if placeholders is not None else 0
+        # Loud on the console, quiet in the panel. A generator that raises must not take
+        # the setup panel down with it, but it must not vanish either: "0 questions
+        # waiting" and "the thing that counts questions is broken" look identical here.
+        print("questions: generator failed, step shown without them: %r" % (exc,),
+              file=sys.stderr)
+    if placeholders is None:
+        detail = "no rules file yet - the tool has never been told how you work"
+    elif placeholders or heavy:
+        bits = []
+        if placeholders:
+            bits.append("%d section%s still say \"fill this in\""
+                        % (placeholders, "" if placeholders == 1 else "s"))
+        if heavy:
+            bits.append("%d question%s waiting that only you can answer"
+                        % (len(heavy), "" if len(heavy) == 1 else "s"))
+        detail = "; ".join(bits)
+    elif pending:
+        # DONE, AND STILL WITH THINGS TO ASK. Both halves have to be said: the step is
+        # genuinely satisfied (nothing shipped is still a placeholder, nothing urgent is
+        # unanswered) while the mailbox keeps producing questions worth a minute. Reporting
+        # only the first half is what left thirteen real questions sitting behind a panel
+        # that had already congratulated itself and hidden.
+        detail = ("rules are yours, not the shipped defaults - %d more question%s waiting "
+                  "whenever you want them" % (len(pending), "" if len(pending) == 1 else "s"))
+    else:
+        detail = "%d answered; nothing more to ask right now" % len(questions._answered(conn))
+    steps.append({
+        "key": "rules", "title": "Tell the tool how you work",
+        # Advisory, not blocking. The guard in step 2 refuses rules while it is unset
+        # because binning a bank's mail is unrecoverable; this one only shapes what gets
+        # surfaced, and a tool that refuses to run until you have answered a questionnaire
+        # is one nobody finishes installing.
+        "done": bool(placeholders == 0 and not heavy),
+        "advisory": True,
+        "questions_waiting": len(pending),
+        "detail": detail,
+        "action": ("Ask your agent to \"ask me the setup questions\", or open the Questions "
+                   "panel. They are generated from your own mailbox - each one comes with "
+                   "the messages behind it, so they are answered from memory in seconds "
+                   "rather than by thinking about policy in the abstract."),
+    })
+
     return {"steps": steps,
-            "complete": all(s["done"] for s in steps),
+            # `complete` deliberately ignores advisory steps: a permanently-incomplete
+            # setup panel is one people learn to close, and then the two steps that are
+            # genuinely load-bearing stop being read too.
+            "complete": all(s["done"] for s in steps if not s.get("advisory")),
             "outstanding": [s["key"] for s in steps if not s["done"]]}
 
 
@@ -1712,6 +1777,76 @@ def api_whoami(conn, q):
             "pid": os.getpid()}
 
 
+def api_questions(conn, q):
+    """What the tool still does not know about its owner, asked from their own mailbox.
+
+    The generator lives in questions.py; this endpoint is the seam a skill and the dashboard
+    both read, so a question asked in conversation and a question shown in the panel are the
+    same question with the same id - answer it either way and it stops being asked.
+
+    `total` is reported beside a capped list on purpose. A panel that shows six of twenty and
+    says only "6" is the shape of understatement this project keeps finding: correct, and
+    read as complete.
+    """
+    import questions                                              # noqa: PLC0415
+    # RULES_FILE, not a second path lookup of my own. Two answers to "where are the rules?"
+    # is one too many: the generator would suppress questions from one file while the rest
+    # of the server wrote rules into another, and nothing would report the disagreement.
+    rules = RULES_FILE
+    try:
+        items, total = questions.generate(
+            conn, rules_path=rules, protected=load_protected()["names"],
+            limit=int(q.get("limit", ["6"])[0] or 6))
+    except sqlite3.OperationalError as exc:
+        # A store from before this release has no answers table until init_db runs. Say so
+        # rather than returning an empty list, which would read as "nothing to ask".
+        return {"questions": [], "total": 0, "error": "store not migrated: %s" % exc}
+    answered = len(questions._answered(conn))
+    return {"questions": items, "total": total, "shown": len(items),
+            "answered": answered,
+            "placeholders_remain": _rules_placeholders(rules)}
+
+
+def _rules_placeholders(path):
+    """Sections of the rules file still carrying the shipped 'fill this in' text."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            text = f.read()
+    except OSError:
+        return None                      # no file at all is a different state from an empty one
+    return len(re.findall(r"_Fill this in\._", text, re.I))
+
+
+def api_answer(conn, q, body=None):
+    """Record an answer. POST only.
+
+    Recording and APPLYING are separate on purpose, and this endpoint only records. Writing
+    a rule the owner did not quite mean is the risky half of elicitation, so the text that
+    would be written is shown and confirmed before anything touches the rules file - the
+    same propose/dispose split apply_proposal.py already uses for mail.
+    """
+    from datetime import datetime                                  # noqa: PLC0415
+    body = body or {}
+    qid = (body.get("id") or "").strip()
+    answer = (body.get("answer") or "").strip()
+    if not qid:
+        return {"ok": False, "error": "no question id"}
+    if not answer:
+        # Deleting the row, not storing "": an unanswered question must stay askable.
+        conn.execute("DELETE FROM answers WHERE question_id = ?", (qid,))
+        conn.commit()
+        return {"ok": True, "id": qid, "answered": False}
+    conn.execute(
+        "INSERT INTO answers (question_id, kind, question, evidence, answer, answered_at, "
+        "written_to) VALUES (?,?,?,?,?,?,?) ON CONFLICT(question_id) DO UPDATE SET "
+        "answer = excluded.answer, answered_at = excluded.answered_at",
+        (qid, body.get("kind"), body.get("question"),
+         json.dumps(body.get("evidence") or {}, default=str), answer,
+         datetime.now().isoformat(timespec="seconds"), body.get("written_to")))
+    conn.commit()
+    return {"ok": True, "id": qid, "answered": True}
+
+
 API = {
     "/api/whoami": api_whoami,
     "/api/setup": api_setup,
@@ -1732,6 +1867,7 @@ API = {
     "/api/steam/sales": api_steam_sales,
     "/api/steam/refresh": api_steam_refresh,
     "/api/new-hosts": api_new_hosts,
+    "/api/questions": api_questions,
 }
 
 # Writing endpoints are a SEPARATE table, reachable only via do_POST and only after the
@@ -1742,6 +1878,7 @@ WRITE_API = {
     "/api/protected-names": api_protected_names,
     "/api/sender-rule": api_sender_rule,
     "/api/host-review": api_host_review,
+    "/api/answer": api_answer,
 }
 
 
