@@ -2294,6 +2294,12 @@ async function loadQuiet() {
     `Watching <b>${r.established || 0}</b> senders with an established rhythm ` +
     `(of ${r.senders_total || 0} seen), across <b>${r.runs || 0}</b> runs ` +
     `${esc(r.first_run || "")} to ${esc(r.last_run || "")}. ` +
+    // Every sender is measured against the runs that covered ITS mailbox, not against all
+    // of them. A historical intake creates runs that only ever touched one account, and
+    // counting those as observations of every other account reports senders as silent when
+    // nobody looked at them - which is an absence asserted by an instrument that never ran.
+    `Each sender is measured only against the runs that looked at <i>its own mailbox</i>, ` +
+    `so a backfilled day covering one account is not counted as silence from the others. ` +
     `A sender qualifies after ${r.min_obs} appearances spanning ${r.min_span} runs, and is ` +
     `flagged only when it has been silent <i>longer than its own worst gap ever</i>. ` +
     `<span class="warn">Monthly billers cannot qualify yet</span> - the run history is too ` +
@@ -2323,7 +2329,10 @@ async function loadQuiet() {
         `<span class="qcat">${esc(it.category)}</span>` +
         `<span class="qratio ${ratio}">${it.ratio}x its worst</span>` +
       `</div>` +
-      `<div class="qbody">Silent <b>${it.silent_runs}</b> runs. ` +
+      // "of N" because every sender has its own denominator now: the runs that covered
+      // its mailbox. Without it, a reader divides by the global run count and gets a
+      // number that is true of nothing.
+      `<div class="qbody">Silent <b>${it.silent_runs}</b> of the <b>${it.observed_runs}</b> runs that looked at this mailbox. ` +
       `Never went more than <b>${it.worst_gap}</b> before, across ${it.observations} ` +
       `appearances since ${esc(it.first_seen)}. Last seen <b>${esc(it.last_seen)}</b>.</div>` +
       (it.variants && it.variants.length > 1

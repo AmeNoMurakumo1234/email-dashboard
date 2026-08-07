@@ -68,10 +68,95 @@ c2 = build({"Acme Bank <no-reply@acme.example>": [0, 7, 14, 21, 28, 35]})
 if "acme bank" not in flagged(c2):
     fails.append("MISS: the folded sender should still be flagged when it truly stops")
 
+# ---------------------------------------------------------------------------------------
+# A BACKFILL MUST NOT MANUFACTURE SILENCE.
+#
+# Found on the live store: 252 runs, of which 51 were real sweeps and 139 contained exactly
+# ONE mailbox, because a historical intake stages one run per arrival day and a given day's
+# batch comes from a single account. Measuring every sender against every run then counts
+# "a day when somebody else's mailbox was being backfilled" as a day this sender was silent.
+# A monthly biller went from a normal cadence to "3.69x its own worst gap" without changing
+# its behaviour at all.
+class _Cur:
+    """A cursor-shaped wrapper: fetchall(), and iterable for PRAGMA-style reads."""
+
+    def __init__(self, items):
+        self.items = items
+
+    def fetchall(self):
+        return self.items
+
+    def __iter__(self):
+        return iter(self.items)
+
+
+def _case_backfill():
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import server                                                  # noqa: PLC0415
+
+    class Conn:
+        """Just enough of a store: two mailboxes, and runs that only ever cover one."""
+
+        def __init__(self, rows_, runs_):
+            self.rows, self.runs = rows_, runs_
+
+        def execute(self, sql, args=()):
+            # server.rows() calls .fetchall(), so the fake has to answer like a cursor
+            # rather than like a list - a fake that is merely list-shaped fails inside the
+            # code under test and reports it as a bug in the code.
+            if "table_info" in sql:
+                return _Cur([(0, "account", "TEXT")])
+            if "FROM runs" in sql:
+                return _Cur([{"run_date": d} for d in self.runs])
+            return _Cur(self.rows)
+
+    # `a@x` is swept on ten consecutive days and appears on every one of them - it has not
+    # gone quiet by any measure. `b@x` is then backfilled across twenty later days.
+    # Spread so the sender actually QUALIFIES: enough appearances, spanning enough runs.
+    # The first version packed ten appearances into nine runs, which is under the minimum
+    # span - so the control "a real stop is still caught" failed because the sender was
+    # never established, not because the stop was missed. A fixture that cannot qualify
+    # tests nothing and blames the code.
+    rows_ = []
+    for i in range(10):
+        rows_.append({"sender": "Biller <biller@example.com>", "account": "a@x",
+                      "run_date": "2026-01-%02d" % (i * 3 + 1), "category": "bill"})
+    for i in range(28):
+        rows_.append({"sender": "Filler <filler@example.com>", "account": "a@x",
+                      "run_date": "2026-01-%02d" % (i + 1), "category": "promo"})
+    for i in range(20):
+        rows_.append({"sender": "Other <other@example.com>", "account": "b@x",
+                      "run_date": "2026-02-%02d" % (i + 1), "category": "promo"})
+    runs_ = sorted({r["run_date"] for r in rows_})
+
+    out = server.api_quiet(Conn(rows_, runs_), {})
+    flagged = {i["sender"] for i in out["items"]}
+    if "biller" in flagged:
+        fails.append("FALSE ALARM: a sender counted silent on days that swept a DIFFERENT "
+                     "mailbox - a backfill manufacturing silence")
+    # And the control: the same shape, but the biller really does stop.
+    rows2 = [r for r in rows_ if r["account"] == "a@x"]
+    for i in range(20):
+        rows2.append({"sender": "Other <other@example.com>", "account": "a@x",
+                      "run_date": "2026-02-%02d" % (i + 1), "category": "promo"})
+    out2 = server.api_quiet(Conn(rows2, sorted({r["run_date"] for r in rows2})), {})
+    if "biller" not in {i["sender"] for i in out2["items"]}:
+        fails.append("MISS: a real stop in a mailbox that WAS swept must still be caught")
+    for i in out2.get("items", []):
+        if not isinstance(i.get("observed_runs"), int) or i["observed_runs"] < 1:
+            fails.append("MISS: a flagged item does not state its own denominator, so the "
+                         "reader divides by the global run count")
+        break
+
+
+_case_backfill()
+
 print("=== two-sided control on server.api_quiet ===")
 for line in ("1 fires on a real stop", "2 silent on an active sender",
              "3 silent on a burst", "4 silent inside worst gap",
-             "5 fold does not invent silence, and still catches a true stop"):
+             "5 fold does not invent silence, and still catches a true stop",
+             "6 a backfill of one mailbox is not silence from the others"):
     print("  case", line)
 if fails:
     print("\nFAILURES:")
@@ -79,4 +164,3 @@ if fails:
         print("  -", x)
     sys.exit(1)
 print("\nALL PASS - the detector fires when it should and stays quiet when it should.")
-

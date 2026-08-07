@@ -777,7 +777,7 @@ def api_workflow_actions(conn, q):
     # The client renders "not a <domain> host" and must not carry its own copy of what
     # that domain is - it is configuration, and a second spelling of it is a second thing
     # to get wrong the day someone changes it.
-    return {"items": items, "days": days, "horizon": horizon, "errors": errors,
+    return {"items": items, "lattice": "per-account", "days": days, "horizon": horizon, "errors": errors,
             "candidates": len(seen), "domain": domain,
             "outstanding": len(outstanding), "upcoming": len(upcoming)}
 
@@ -1601,9 +1601,35 @@ def api_quiet(conn, q):
     Gaps are counted in RUNS ELAPSED, never calendar days: a day with no run is not
     evidence of silence.
     """
+    # `account` is selected only if the table has it. A store older than the column - or a
+    # test fixture that builds a minimal table - must still get a usable answer rather than
+    # an exception, and without the column every run covers every sender, which is exactly
+    # the old behaviour and correct for a store that has never been backfilled.
+    has_account = any(r[1] == "account"
+                      for r in conn.execute("PRAGMA table_info(messages)"))
     rows_all = rows(conn.execute(
-        "SELECT sender, run_date, category FROM messages "
-        "WHERE sender IS NOT NULL AND sender != ''"))
+        "SELECT sender, %s AS account, run_date, category FROM messages "
+        "WHERE sender IS NOT NULL AND sender != ''"
+        % ("account" if has_account else "''")))
+
+    # WHICH RUNS ACTUALLY LOOKED AT WHICH MAILBOX.
+    #
+    # This panel says "I looked and saw nothing", and that sentence is only true of runs
+    # that looked at the mailbox the sender writes to. It used to measure every sender
+    # against EVERY run, which held while every run was a full sweep of all accounts - and
+    # stopped holding the moment a historical intake existed.
+    #
+    # Measured on this store after the backfill: 252 runs, of which 51 were real sweeps and
+    # 139 contained exactly ONE mailbox. A monthly biller in one account was counted silent
+    # across every backfilled day drawn from a different account - so its gap grew by two
+    # hundred runs while its behaviour did not change at all, and it was reported as 3.69x
+    # its own worst silence. Nobody had looked. That is an absence asserted by an instrument
+    # that never ran, which is the exact failure this whole project is organised against,
+    # arriving through its own backfill feature.
+    per_account_days = collections.defaultdict(set)
+    for r in rows_all:
+        if r["account"]:
+            per_account_days[r["account"]].add(r["run_date"])
 
     # THE LATTICE COMES FROM `runs`, NOT FROM `messages`. The question this panel answers
     # is "when did I LOOK and see nothing", so the observation days are the days a run
@@ -1628,6 +1654,7 @@ def api_quiet(conn, q):
     seen = collections.defaultdict(set)
     cats = collections.defaultdict(collections.Counter)
     variants = collections.defaultdict(set)
+    sender_accounts = collections.defaultdict(set)
     for r in rows_all:
         k = _sender_key(r["sender"])
         # A message whose run_date is not in the lattice cannot be placed in time, so it
@@ -1637,16 +1664,33 @@ def api_quiet(conn, q):
         seen[k].add(idx[r["run_date"]])
         cats[k][r["category"] or "?"] += 1
         variants[k].add(r["sender"])
+        if r["account"]:
+            sender_accounts[k].add(r["account"])
 
     items, established = [], 0
     for k, days in seen.items():
-        d = sorted(days)
+        # THE LATTICE IS PER SENDER, built from the runs that covered the mailbox(es) this
+        # sender writes to. Positions are re-derived against that shorter sequence, so a
+        # gap counts observations rather than calendar days on which somebody else's
+        # mailbox was being backfilled.
+        covered = set()
+        for acct in sender_accounts.get(k, ()):
+            covered |= per_account_days.get(acct, set())
+        # No known mailbox means no basis for narrowing, so the full sequence stands. That
+        # is the old behaviour, and it is the right fallback: narrowing to nothing would
+        # make every sender vanish from the panel, which is silence about silence.
+        lattice = [d for d in run_days if d in covered] if covered else list(run_days)
+        if len(lattice) < 2:
+            continue
+        pos = {run_days.index(day): i for i, day in enumerate(lattice)}
+        d = sorted({pos[i] for i in days if i in pos})
+        local_last = len(lattice) - 1
         if len(d) < MIN_OBS or (d[-1] - d[0]) < MIN_SPAN:
             continue
         established += 1
         gaps = [b - a for a, b in zip(d, d[1:])]
         worst = max(gaps)
-        silence = last_i - d[-1]
+        silence = local_last - d[-1]
         if silence <= worst:
             continue
         cat = cats[k].most_common(1)[0][0]
@@ -1655,6 +1699,11 @@ def api_quiet(conn, q):
             "category": cat,
             "weight": 2 if cat in MONEY_CATS else (1.5 if cat in GUARD_CATS else 1.0),
             "silent_runs": silence,
+            # HOW MANY OBSERVATIONS THAT GAP IS OUT OF. Every sender is measured against a
+            # different sequence now - the runs that covered its own mailbox - so a bare
+            # "silent 105 runs" beside a global "252 runs" invites the reader to do a
+            # division that is not true of anything.
+            "observed_runs": len(lattice),
             "worst_gap": worst,
             "median_gap": statistics.median(gaps),
             "ratio": round(silence / float(worst), 2),
