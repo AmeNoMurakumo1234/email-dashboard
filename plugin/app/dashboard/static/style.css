@@ -985,3 +985,13 @@ header h1 { font-size: 19px; }
 .topband .heat-legend { margin-top: 6px; font-size: 10.5px; }
 /* One plain sentence, because this tile counts something the tool has never named before. */
 .score-what { font-size: 10px; color: var(--muted); line-height: 1.35; margin-top: 4px; }
+
+/* Hidden, like every other scroller here. Two bars on a box this small is more furniture
+   than content, and the horizontal one was showing only because the vertical one had
+   narrowed the box enough to make the chips overflow - a scrollbar caused by a scrollbar.
+   The list still scrolls; it just does not advertise it. */
+.topband .account-strip, .topband .account-grid {
+  scrollbar-width: none; -ms-overflow-style: none; overflow-x: hidden;
+}
+.topband .account-strip::-webkit-scrollbar,
+.topband .account-grid::-webkit-scrollbar { width: 0; height: 0; display: none; }
