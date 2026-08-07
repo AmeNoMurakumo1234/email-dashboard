@@ -125,6 +125,47 @@ CREATE TABLE IF NOT EXISTS answers (
     written_to  TEXT                         -- file the answer was applied to, once applied
 );
 
+-- THINGS THAT ARE STILL OPEN, AND THINGS THAT WERE FINISHED SOMEWHERE ELSE.
+--
+-- A brief is a delta. A task assigned three weeks ago appeared in exactly one brief and
+-- then vanished, because every run reports what ARRIVED rather than what is outstanding.
+-- The reporting deployment had to invent two markdown files to survive that - one listing
+-- what was still open, one listing what had been dealt with elsewhere - and, as they put
+-- it, both were markdown files pretending to be tables. So they are tables.
+--
+-- NOT THE SAME AS AN ACK, and the difference is the whole point. An ack says "I have seen
+-- this"; seeing something is not doing it. An item you acknowledged on Monday and have not
+-- done is still open on Friday, and the tool that keeps telling you about new mail should
+-- be the one that remembers.
+--
+-- RESOLVED OFF-CHANNEL IS A FIRST-CLASS OUTCOME. Most things that arrive by mail are
+-- finished somewhere the mail tool cannot see - a phone call, a chat message, a
+-- conversation in a corridor. Without somewhere to say so, the only ways to clear an item
+-- are to lie about it or to leave it open forever, and both end with the list being
+-- ignored. `resolved_where` records that it was closed, and that the closing did not
+-- happen here.
+--
+-- Keyed the same way acks are (message-id, or sender+subject shape for a recurring
+-- series), so the two can always be talked about together.
+CREATE TABLE IF NOT EXISTS open_items (
+    key           TEXT PRIMARY KEY,      -- message_id, or sender_key|subject_shape
+    kind          TEXT NOT NULL,         -- 'message' | 'thread'
+    account       TEXT,
+    sender        TEXT,
+    subject       TEXT,
+    concept       TEXT,
+    importance    TEXT,
+    first_seen    TEXT,                  -- the day it first needed attention
+    last_seen     TEXT,                  -- the most recent run that still saw it
+    runs_seen     INTEGER NOT NULL DEFAULT 1,
+    state         TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'resolved'
+    resolved_at   TEXT,
+    resolved_where TEXT,                 -- 'email' | 'off-channel' | 'moot'
+    resolved_note TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_open_state ON open_items(state);
+
 -- WHICH HOSTS EACH SENDER NORMALLY LINKS TO.
 --
 -- The question "does this link stay on the sender's own domain?" is static and has no
@@ -513,11 +554,114 @@ def mark_steam_ended(app_id, ended_date, checked_iso):
         conn.close()
 
 
+
+# Which importances mean "a person has to do something". Anything else is information, and
+# information does not stay open - it is read or it is not.
+ATTENTION = ("action-needed", "family", "security", "financial")
+
+
+_SHAPE_SUBS = [
+    # REPLY AND FORWARD PREFIXES COME OFF FIRST, and the whole chain in one pass - "Re: Fwd:
+    # Re: " is one match, not three. This has to run BEFORE the punctuation rule below, which
+    # strips the colons and would leave "re" and "fwd" looking like ordinary leading words.
+    #
+    # Leaving them in split a thread from its own replies, and - because subject_shape also
+    # feeds api_repeats - split a notice from its own follow-ups in the very view whose
+    # comment calls it THE DROWNING MECHANISM. One missing rule, two features quietly wrong.
+    #
+    # The colon is required, so "Re-engineering the process" and "Fwd Thinking Ltd" are
+    # untouched. Non-English prefixes included because a mailbox is not monolingual; single
+    # letters ("R:", "I:") are deliberately NOT, since they collide with real subjects.
+    (re.compile(r"^(?:\s*(?:re|ref|fw|fwd|aw|wg|sv|vb|vs|vl|rv|tr|antw|doorst|enc|res|odp|pd"
+                r"|ynt|ilt|回复|轉寄)\s*(?:\[\d+\]|\(\d+\))?\s*:)+\s*", re.I), " "),
+    (re.compile(r"https?://\S+"), " "),
+    (re.compile(r"\b\d{1,3}(?:[,.]\d{3})*(?:\.\d\d)?\b"), " "),   # amounts / counts
+    (re.compile(r"[#$£€]\s*\S+"), " "),
+    (re.compile(r"\b\d+\b"), " "),
+    (re.compile(r"[^\w\s]+"), " "),
+    (re.compile(r"\s+"), " "),
+]
+
+
+def subject_shape(subject):
+    s = (subject or "").lower()
+    for pat, rep in _SHAPE_SUBS:
+        s = pat.sub(rep, s)
+    return s.strip()
+
+
+def open_item_key(msg):
+    """The durable handle for an outstanding item.
+
+    Message-ID when there is one, because it survives folders and re-sends. Otherwise the
+    sender-and-subject shape, which is what a recurring obligation actually is - the same
+    notice arriving monthly is ONE open item, not twelve, and keying it per message would
+    reproduce the drowning this table exists to stop.
+    """
+    mid = (msg.get("message_id") or "").strip()
+    if mid:
+        return "message", mid
+    sender = (msg.get("sender") or "").strip().lower()
+    # subject_shape, NOT a local regex. A second, simpler shaping here would have left the
+    # reply prefixes on - so "Re: your renewal" and "your renewal" would be two separate
+    # open items, which is precisely the split 0.5.2 was spent closing for acks and
+    # repeats. The rule has one home.
+    subject = subject_shape(msg.get("subject"))
+    if not sender or not subject:
+        return None, None
+    return "thread", "%s|%s" % (sender, subject)
+
+
+def carry_open_items(conn, messages, run_date):
+    """Open an item for anything that needs a person, and age the ones already open.
+
+    Returns (opened, still_open_seen). Reported by ingest rather than done silently: a
+    carry-forward that quietly opens nothing looks exactly like a mailbox with nothing
+    outstanding, and those two states must never render the same.
+
+    A RESOLVED ITEM IS NOT REOPENED by the same message arriving again in a later batch -
+    that is a re-ingest, not a new obligation. It IS reopened by a genuinely new message,
+    because a new Message-ID is a new thing to do.
+    """
+    opened = seen = 0
+    for m in messages:
+        if (m.get("importance") or "") not in ATTENTION:
+            continue
+        if m.get("disposition") == "trashed":
+            continue          # binned by the triage that just ran; not outstanding
+        kind, key = open_item_key(m)
+        if not key:
+            continue
+        row = conn.execute("SELECT state, runs_seen FROM open_items WHERE key = ?",
+                           (key,)).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO open_items (key, kind, account, sender, subject, concept, "
+                "importance, first_seen, last_seen, runs_seen, state) "
+                "VALUES (?,?,?,?,?,?,?,?,?,1,'open')",
+                (key, kind, m.get("account"), m.get("sender"), m.get("subject"),
+                 concept_of(m.get("category")), m.get("importance"),
+                 msg_day(m.get("msg_date"), run_date), run_date))
+            opened += 1
+        elif row["state"] == "open":
+            # runs_seen counts RUNS, not messages, so a second batch on the same day does
+            # not make a three-day-old item look three times as urgent.
+            conn.execute(
+                "UPDATE open_items SET last_seen = ?, "
+                "runs_seen = runs_seen + (CASE WHEN last_seen = ? THEN 0 ELSE 1 END) "
+                "WHERE key = ?", (run_date, run_date, key))
+            seen += 1
+    return opened, seen
+
+
 def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=None,
                append=False):
     """
     Idempotent per run_date: REPLACES any existing data for that day. Returns
-    (run_id, replaced_count).
+    (run_id, replaced_count, open_stats) where open_stats is
+    {"opened": n, "still_open_seen": n} - the carry-forward, RETURNED rather than left in a
+    module global for a caller to fish out. Reported by ingest because a carry-forward that
+    quietly opened nothing looks exactly like a mailbox with nothing outstanding.
 
     Replace is correct for a daily sweep and a footgun for a batched intake: every batch
     had to re-send every message already ingested for that date, or the earlier ones were
@@ -611,6 +755,7 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
                  else None,
                  *recipients_of(m, m.get("account"))),
             )
+        opened, still_open = carry_open_items(conn, messages, run_date)
         conn.commit()
     finally:
         conn.close()
@@ -624,7 +769,7 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
 
     # BOTH numbers, always. A caller that only learns what it wrote cannot tell a clean
     # append from a replace that silently deleted the previous nine batches.
-    return run_id, replaced
+    return run_id, replaced, {"opened": opened, "still_open_seen": still_open}
 
 
 if __name__ == "__main__":

@@ -670,3 +670,32 @@ mark { background: rgba(74,168,255,.28); color: var(--text); border-radius: 3px;
   white-space: nowrap;
   border-color: var(--accent, #4a90d9);
 }
+
+/* ---------- still open: carried forward until someone says otherwise ---------- */
+.open-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.open-row:last-child { border-bottom: none; }
+.open-subject { font-weight: 600; }
+.open-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+/* Age is the field this panel sorts on, so it is the field that is legible at a glance. */
+.open-age { font-variant-numeric: tabular-nums; font-weight: 600; color: inherit; }
+.open-row.stale .open-age { color: var(--warn, #d98d3d); }
+.open-row.done { opacity: 0.6; }
+.open-row.done .open-subject { font-weight: 500; text-decoration: line-through; }
+.open-resolved { font-size: 0.85rem; color: var(--muted); }
+.open-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }

@@ -10,6 +10,7 @@ import argparse
 import collections
 import email.utils as email_utils
 import json
+from datetime import datetime
 import os
 import re
 import statistics
@@ -1326,34 +1327,12 @@ def api_calendar(conn, q):
 # Strip the parts of a subject that CHANGE between otherwise-identical notices: dates,
 # amounts, invoice/order numbers, counts. Without this, "Payment due 08/21" and "Payment due
 # 09/21" look like two unrelated messages, which is precisely how a repeating notice hides.
-_SHAPE_SUBS = [
-    # REPLY AND FORWARD PREFIXES COME OFF FIRST, and the whole chain in one pass - "Re: Fwd:
-    # Re: " is one match, not three. This has to run BEFORE the punctuation rule below, which
-    # strips the colons and would leave "re" and "fwd" looking like ordinary leading words.
-    #
-    # Leaving them in split a thread from its own replies, and - because subject_shape also
-    # feeds api_repeats - split a notice from its own follow-ups in the very view whose
-    # comment calls it THE DROWNING MECHANISM. One missing rule, two features quietly wrong.
-    #
-    # The colon is required, so "Re-engineering the process" and "Fwd Thinking Ltd" are
-    # untouched. Non-English prefixes included because a mailbox is not monolingual; single
-    # letters ("R:", "I:") are deliberately NOT, since they collide with real subjects.
-    (re.compile(r"^(?:\s*(?:re|ref|fw|fwd|aw|wg|sv|vb|vs|vl|rv|tr|antw|doorst|enc|res|odp|pd"
-                r"|ynt|ilt|回复|轉寄)\s*(?:\[\d+\]|\(\d+\))?\s*:)+\s*", re.I), " "),
-    (re.compile(r"https?://\S+"), " "),
-    (re.compile(r"\b\d{1,3}(?:[,.]\d{3})*(?:\.\d\d)?\b"), " "),   # amounts / counts
-    (re.compile(r"[#$£€]\s*\S+"), " "),
-    (re.compile(r"\b\d+\b"), " "),
-    (re.compile(r"[^\w\s]+"), " "),
-    (re.compile(r"\s+"), " "),
-]
-
-
-def subject_shape(subject):
-    s = (subject or "").lower()
-    for pat, rep in _SHAPE_SUBS:
-        s = pat.sub(rep, s)
-    return s.strip()
+# subject_shape lives in db.py now - it is what WRITES thread keys (acks and
+# open_items both), and a reader with its own copy of the rule is how "Re: X"
+# and "X" became two different threads in the first place. Re-exported here so
+# every existing caller in this module is unchanged.
+subject_shape = db.subject_shape
+_SHAPE_SUBS = db._SHAPE_SUBS
 
 
 def api_repeats(conn, q):
@@ -1847,6 +1826,90 @@ def api_answer(conn, q, body=None):
     return {"ok": True, "id": qid, "answered": True}
 
 
+def api_open_items(conn, q):
+    """What is still outstanding, oldest first, with how long it has been outstanding.
+
+    THE PANEL A BRIEF CANNOT BE. Every other view here answers "what arrived?" - which is
+    the right question for a sweep and the wrong one for a person, because a task assigned
+    three weeks ago arrived exactly once and has been invisible ever since. This is the only
+    view whose contents get WORSE by being ignored, which is why it sorts by age rather
+    than by importance: a two-day-old security item is less alarming than a three-week-old
+    one nobody has touched.
+    """
+    state = (q.get("state", ["open"])[0] or "open").strip().lower()
+    where = "" if state == "all" else "WHERE state = ?"
+    args = () if state == "all" else (state,)
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM open_items %s ORDER BY "
+        "CASE state WHEN 'open' THEN 0 ELSE 1 END, first_seen ASC" % where, args)]
+    today = datetime.now().date()
+    for r in rows:
+        r["days_open"] = _days_between(r.get("first_seen"),
+                                       r.get("resolved_at") or str(today))
+        r["stale"] = bool(r["state"] == "open" and (r["days_open"] or 0) >= 14)
+    n_open = sum(1 for r in rows if r["state"] == "open")
+    return {
+        "items": rows,
+        "open": n_open,
+        # Resolved-elsewhere reported separately, because it is the number that says the
+        # tool is being told the truth. If it stays at zero while the open list grows,
+        # people are closing things without a way to say so - and the list is on its way to
+        # being ignored.
+        "resolved_off_channel": sum(1 for r in rows
+                                    if r.get("resolved_where") == "off-channel"),
+        "oldest_days": max([r["days_open"] or 0 for r in rows if r["state"] == "open"],
+                           default=0),
+        "state": state,
+    }
+
+
+def _days_between(a, b):
+    from datetime import date                                      # noqa: PLC0415
+    try:
+        y1, m1, d1 = (int(x) for x in str(a)[:10].split("-"))
+        y2, m2, d2 = (int(x) for x in str(b)[:10].split("-"))
+        return (date(y2, m2, d2) - date(y1, m1, d1)).days
+    except (ValueError, TypeError):
+        # Unknown, not zero. A missing first_seen rendering as "0 days open" would make the
+        # oldest item in the list look like the newest.
+        return None
+
+
+def api_resolve(conn, q, body=None):
+    """Close an open item, or reopen one. POST only.
+
+    `where` is the point of this endpoint. Most things that arrive by mail are finished
+    somewhere this tool cannot see, and without somewhere to say so the only ways to clear
+    an item are to lie about it or to leave it open forever. Both end with the list being
+    ignored, which is the failure this whole tool is arguing against.
+    """
+    from datetime import datetime as _dt                           # noqa: PLC0415
+    body = body or {}
+    key = (body.get("key") or "").strip()
+    if not key:
+        return {"ok": False, "error": "no key"}
+    if not conn.execute("SELECT 1 FROM open_items WHERE key = ?", (key,)).fetchone():
+        return {"ok": False, "error": "no open item with that key"}
+    if body.get("open") is True:
+        conn.execute("UPDATE open_items SET state = 'open', resolved_at = NULL, "
+                     "resolved_where = NULL, resolved_note = NULL WHERE key = ?", (key,))
+        conn.commit()
+        return {"ok": True, "key": key, "state": "open"}
+    where = (body.get("where") or "off-channel").strip().lower()
+    if where not in ("email", "off-channel", "moot"):
+        return {"ok": False,
+                "error": "where must be 'email', 'off-channel' or 'moot' (no longer "
+                         "relevant) - an unrecorded reason is how a resolved list stops "
+                         "meaning anything"}
+    conn.execute(
+        "UPDATE open_items SET state = 'resolved', resolved_at = ?, resolved_where = ?, "
+        "resolved_note = ? WHERE key = ?",
+        (_dt.now().isoformat(timespec="seconds"), where,
+         (body.get("note") or "").strip()[:400] or None, key))
+    conn.commit()
+    return {"ok": True, "key": key, "state": "resolved", "where": where}
+
+
 API = {
     "/api/whoami": api_whoami,
     "/api/setup": api_setup,
@@ -1868,6 +1931,7 @@ API = {
     "/api/steam/refresh": api_steam_refresh,
     "/api/new-hosts": api_new_hosts,
     "/api/questions": api_questions,
+    "/api/open-items": api_open_items,
 }
 
 # Writing endpoints are a SEPARATE table, reachable only via do_POST and only after the
@@ -1879,6 +1943,7 @@ WRITE_API = {
     "/api/sender-rule": api_sender_rule,
     "/api/host-review": api_host_review,
     "/api/answer": api_answer,
+    "/api/resolve": api_resolve,
 }
 
 

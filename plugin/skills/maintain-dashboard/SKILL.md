@@ -1,6 +1,6 @@
 ---
 name: maintain-dashboard
-description: Use when running the daily email sweep, feeding the dashboard, or keeping it healthy - ingesting a run, rebuilding sender profiles, checking for senders that have gone quiet or started linking somewhere new, honouring what the owner has acknowledged, and putting the questions the tool has generated from their own mail in front of them. The operating discipline for an agent that maintains this board day to day.
+description: Use when running the daily email sweep, feeding the dashboard, or keeping it healthy - ingesting a run, rebuilding sender profiles, checking for senders that have gone quiet or started linking somewhere new, honouring what the owner has acknowledged, putting the questions the tool has generated from their own mail in front of them, and carrying outstanding items forward instead of letting a brief drop them. The operating discipline for an agent that maintains this board day to day.
 ---
 
 # Maintaining the board
@@ -183,6 +183,39 @@ no, the guard is doing its job.
 Hold the question rather than guessing. Add it to the owner's questions file with the
 options you considered, and leave the mail alone until it is answered. One held question
 costs a day; one wrong deletion can cost something irreplaceable.
+
+## Every run: the things that are still open
+
+A brief is a delta. Left to itself it reports what arrived, so a task assigned three weeks
+ago appeared in one brief and has been invisible since. `open_items` is the standing list
+that survives between runs, and `ingest.py` now reports `opened` and `still_open_seen` on
+every run — read both. **`opened: 0` is a claim**: it means either nothing needed a person
+today or the carry-forward is not running, and those must never read the same.
+
+```
+curl -s http://127.0.0.1:9770/api/open-items
+```
+
+Include the outstanding list in the daily report, **oldest first**, with its age. This is
+the only list on the board that gets worse by being ignored — a three-week-old item nobody
+has touched matters more than today's, which is the reverse of how every other panel ranks.
+
+**Offer the three outcomes, not one.** An item can be done here, done elsewhere, or no
+longer relevant. Most things that arrive by mail are settled on a call or in a chat, and a
+list you have to lie to in order to clear is a list that gets abandoned:
+
+```
+curl -s -X POST http://127.0.0.1:9770/api/resolve   -H "Content-Type: application/json" -H "X-Dashboard: 1"   -d '{"key":"<message-id>","where":"off-channel","note":"settled on a call"}'
+```
+
+**Never resolve an item on the owner's behalf.** Acknowledging is about attention and is
+yours to suggest; resolving is a claim that something was done, and only they know that. An
+item wrongly marked resolved is worse than one left open — the open one is still visible.
+
+Upgrading an install that has history but no list yet:
+`python dashboard/backfill_open_items.py` shows what a window would open, and writes nothing
+until `--write`. Pick the window deliberately: a standing list that is mostly stale on its
+first read is one nobody opens twice.
 
 ## Every run: put the waiting questions in front of them
 

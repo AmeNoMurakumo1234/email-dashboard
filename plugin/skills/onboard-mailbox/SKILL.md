@@ -86,8 +86,27 @@ Exactly three keys per account, and the names matter — the code reads `email`,
 | key | value |
 |---|---|
 | `email` | the full address |
-| `provider` | `microsoft` for Outlook/Hotmail/Live/365 (that exact word); anything else is treated as password-based |
-| `imap_host` | **required for every account**, including Microsoft — `imap.gmail.com`, `outlook.office365.com`, or the provider's own |
+| `provider` | which backend speaks to this mailbox — see the table below |
+| `imap_host` | required for **IMAP** accounts only (`imap.gmail.com`, `outlook.office365.com`) |
+
+`provider` is a real choice with three answers, and all three are supported:
+
+| `provider` | who fetches | needs |
+|---|---|---|
+| `gmail` / `microsoft` / `imap` | this tool, over IMAP | `imap_host`; `microsoft` also needs `ms_client_id` |
+| `graph` | `tools/msgraph.py`, over Microsoft Graph | `ms_client_id`. **No `imap_host`** |
+| `connector` | something else entirely — you pipe JSON into `dashboard/ingest.py` | nothing |
+
+**Declare a connector mailbox anyway.** It is tempting to leave it out of `accounts.json`
+since nothing here fetches it, and that is what people did — with the result that nothing in
+the tool knows the mailbox exists. `doctor` cannot report it, the setup panel cannot count
+it, and the only record of the arrangement lives in somebody's head. Declared, it reports as
+`CONNECTOR` — its own state, never `FAILED`, because it is working exactly as configured.
+
+`imap_host` used to be required for every account regardless, and `connect()` opened the
+socket before it looked at the provider — so a tenant with IMAP disabled failed at the
+connection before authentication was even attempted, and the error described the socket
+rather than the arrangement.
 
 There is no port setting. The connection is always implicit TLS on 993.
 

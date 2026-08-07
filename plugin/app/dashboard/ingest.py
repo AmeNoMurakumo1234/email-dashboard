@@ -212,9 +212,9 @@ def main():
               "Message-IDs and re-run.", file=sys.stderr)
         return 2
 
-    run_id, replaced = db.ingest_run(run_date, accounts=accounts, messages=messages,
-                                     notes=data.get("notes"), steam_sales=steam_sales,
-                                     append=args.append)
+    run_id, replaced, open_stats = db.ingest_run(
+        run_date, accounts=accounts, messages=messages, notes=data.get("notes"),
+        steam_sales=steam_sales, append=args.append)
     print(json.dumps({
         "ok": True, "run_id": run_id, "run_date": run_date,
         "accounts": len(accounts),
@@ -230,6 +230,14 @@ def main():
         "steam_sales": len(steam_sales),
         "trashed": sum(1 for m in messages if m.get("disposition") == "trashed"),
         "kept": sum(1 for m in messages if m.get("disposition") in ("kept", "surfaced")),
+        # CARRIED FORWARD. A brief is a delta, so a task assigned three weeks ago used to
+        # appear in exactly one brief and then vanish. `opened` is what this run added to
+        # the standing list; `still_open_seen` is how many already-open items this run saw
+        # again. Both printed, because "0 opened" is a claim - it means either nothing
+        # needed a person today or the carry-forward is not running, and those must not
+        # look the same.
+        "opened": open_stats["opened"],
+        "still_open_seen": open_stats["still_open_seen"],
     }))
     return 0
 

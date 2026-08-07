@@ -167,6 +167,7 @@ async function init() {
   if (scopeRadio) scopeRadio.checked = true;
 
   $("#wfShowDone").addEventListener("click", () => { wfShowDone = !wfShowDone; loadWorkflowActions(); });
+  $("#openShowDone").addEventListener("click", () => { openShowDone = !openShowDone; loadOpenItems(); });
   $("#hostShowDone").addEventListener("click", () => { hostShowDone = !hostShowDone; loadNewHosts(); });
   $("#amClose").addEventListener("click", () => { $("#acctModal").hidden = true; });
   $("#acctModal").addEventListener("click", (e) => {
@@ -190,6 +191,7 @@ async function init() {
   await loadAcks();                // before the first render, so state is right immediately
   await loadRun();
   loadWorkflowActions().catch(() => {}); // never let this panel block the rest of the page
+  loadOpenItems().catch(() => {});
   loadNewHosts().catch(() => {});        // same: a quiet panel must never break a loud one
   loadHeatmap().catch(() => {});   // decorative-adjacent: never block the run view on it
   setView(ui.view);   // restore the tab the user left on (trash | steam)
@@ -1526,6 +1528,107 @@ function wfLabel(it) {
 }
 
 let wfShowDone = false;
+
+// ---------- still open: the one list that gets worse by being ignored ----------
+
+let openShowDone = false;
+
+async function loadOpenItems() {
+  let data;
+  try {
+    data = await get("/api/open-items?state=" + (openShowDone ? "all" : "open"));
+  } catch (e) {
+    return;
+  }
+  const panel = $("#openPanel");
+  const items = data.items || [];
+  // Hidden only when there is genuinely nothing outstanding AND nothing to review. A
+  // standing list that is always on screen becomes furniture; one that hides when empty
+  // means something every time it appears.
+  panel.hidden = items.length === 0;
+  if (panel.hidden) return;
+
+  // The count says OPEN and OLDEST, because those are the two facts that decide whether
+  // this panel is worth reading today. "4 items" says neither.
+  $("#openCount").textContent =
+    `(${data.open} open` +
+    (data.oldest_days ? `, oldest ${data.oldest_days} days` : "") +
+    (data.resolved_off_channel
+      ? ` · ${data.resolved_off_channel} closed elsewhere`
+      : "") +
+    ")";
+
+  const wrap = $("#openList");
+  wrap.innerHTML = "";
+  items.forEach((it) => wrap.appendChild(openRow(it)));
+}
+
+function openRow(it) {
+  const row = el("div", "open-row" + (it.state === "resolved" ? " done" : "") +
+                         (it.stale ? " stale" : ""));
+  const age =
+    it.days_open === null || it.days_open === undefined
+      ? "age unknown"     // never "0 days" - that would sort the oldest item to the bottom
+      : it.days_open === 0
+      ? "today"
+      : `${it.days_open} day${it.days_open === 1 ? "" : "s"}`;
+
+  row.innerHTML =
+    `<div class="open-main">` +
+    `<div class="open-subject">${esc(it.subject || "(no subject)")}</div>` +
+    `<div class="open-meta">${esc(it.sender || "")}` +
+    `<span class="open-age">${esc(age)}</span>` +
+    (it.runs_seen > 1 ? `<span class="muted">seen in ${it.runs_seen} runs</span>` : "") +
+    (it.importance ? `<span class="badge">${esc(it.importance)}</span>` : "") +
+    `</div></div>`;
+
+  const acts = el("div", "open-actions");
+  if (it.state === "resolved") {
+    const note = el("div", "open-resolved");
+    note.textContent =
+      `resolved ${it.resolved_where === "off-channel" ? "elsewhere" : it.resolved_where}` +
+      (it.resolved_note ? ` — ${it.resolved_note}` : "");
+    acts.appendChild(note);
+    const reopen = el("button", "btn");
+    reopen.textContent = "Reopen";
+    reopen.addEventListener("click", () => resolveItem(it.key, { open: true }));
+    acts.appendChild(reopen);
+  } else {
+    // THREE OUTCOMES, not one. "Done" alone forces a person to record a lie for anything
+    // that was settled on a call, and a list you have to lie to is a list you stop using.
+    [
+      ["Done here", "email"],
+      ["Done elsewhere", "off-channel"],
+      ["No longer relevant", "moot"],
+    ].forEach(([label, where]) => {
+      const b = el("button", "btn");
+      b.textContent = label;
+      b.addEventListener("click", () => {
+        const note = where === "off-channel"
+          ? prompt("Where was it settled? (optional — e.g. 'on a call')") || ""
+          : "";
+        resolveItem(it.key, { where, note });
+      });
+      acts.appendChild(b);
+    });
+  }
+  row.appendChild(acts);
+  return row;
+}
+
+async function resolveItem(key, payload) {
+  try {
+    const res = await fetch("/api/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Dashboard": "1" },
+      body: JSON.stringify(Object.assign({ key }, payload)),
+    }).then((x) => x.json());
+    if (!res.ok) throw new Error(res.error || "refused");
+    await loadOpenItems();
+  } catch (e) {
+    alert("Could not update that item: " + e.message);
+  }
+}
 
 async function loadWorkflowActions() {
   let data;

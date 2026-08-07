@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.8.0 — reach
+
+Three gaps that all had the same shape: the tool could only see the one path it was built
+for, and everything outside it was either invisible or reported as broken.
+
+### Fixed — the provider is checked BEFORE the socket is opened
+
+`connect()` opened an IMAP connection on its first line and looked at the account's provider
+afterwards. So every account had to name an `imap_host` whether or not it would ever use
+one, and a tenant with IMAP disabled — the usual hardening step after a phishing incident,
+and the reason some installs cannot use IMAP at all — failed at the connection before
+authentication was even attempted. The error described the socket rather than the
+arrangement. `msgraph.py` shipped in the same release and `connect()` could not reach it:
+the path was IMAP end to end.
+
+`provider` is now a real choice, and the rules live in one place (`tools/providers.py`) that
+both the fetcher and the dashboard read:
+
+| `provider` | who fetches | needs |
+|---|---|---|
+| `gmail` / `microsoft` / `imap` | this tool, over IMAP | `imap_host` |
+| `graph` | `tools/msgraph.py` | `ms_client_id`, **no `imap_host`** |
+| `connector` | something else; you pipe JSON into `ingest.py` | nothing |
+
+An unrecognised provider is refused rather than defaulted to IMAP — dialling the wrong
+backend produces a confusing error, while "I do not know what 'grpah' is" is actionable.
+
+### Added — a connector is a declarable mailbox, not an absence
+
+There was nowhere to say "this mailbox is fetched by my AI client's connector", so people
+left it out of `accounts.json` — which means nothing in the tool knew it existed. `doctor`
+could not report it, the setup panel could not count it, and the only record of the
+arrangement was in someone's head.
+
+Declared, it reports as **`CONNECTOR`** — its own state, never `FAILED`, because it is
+working exactly as configured. A red row against a mailbox that is fine teaches its reader
+to stop reading red rows. `doctor` now reports `connected`, `checked` and `not_fetched_here`
+separately rather than folding them into one reassuring number.
+
+### Added — `doctor` and `fetch` delegate to Graph instead of pointing at it
+
+They used to answer "use msgraph.py", which is a direction, not an answer, and meant no
+single command could describe an install that mixes backends. Flags are translated
+explicitly, and **a flag with no equivalent stops the command** rather than being dropped —
+a `fetch` that quietly ignores one of its own filters returns the wrong messages and looks
+like it worked.
+
+### Added — things stay open until someone says otherwise
+
+A brief is a delta. A task assigned three weeks ago appeared in exactly one brief and then
+vanished, because every run reports what *arrived*. Deltas cannot carry an obligation.
+
+`open_items` is a standing list that survives between runs. Anything needing a person opens
+an item; later runs age it rather than duplicating it; a recurring notice is **one** item,
+keyed by the same thread rule the acks use, so a reply prefix does not split an obligation
+from itself.
+
+**Not the same as an ack**, and the difference is the point: an ack says "I have seen this",
+and seeing something is not doing it.
+
+The **Still open** panel sorts by AGE, not importance — it is the only list on the board that
+gets worse by being ignored, so a three-week-old item nobody has touched outranks today's.
+
+### Added — resolved off-channel is a first-class outcome
+
+Most things that arrive by mail are finished on a call or in a chat. With nowhere to say so,
+the only ways to clear an item are to lie about it or leave it open forever — and both end
+with the list being ignored, which is the failure the panel exists to prevent. Three
+outcomes: **done here**, **done elsewhere**, **no longer relevant**. Resolving is a state,
+not a delete; the row and its paper trail stay, and it can be reopened.
+
+`ingest.py` reports `opened` and `still_open_seen` on every run. `opened: 0` is a claim —
+either nothing needed a person today or the carry-forward is not running, and those must
+never read the same.
+
+Upgrading an install with history: `dashboard/backfill_open_items.py` seeds the list from a
+bounded window, dry by default. Deliberately not automatic — backfilling everything would
+produce a list that is mostly stale on its first read, which is one nobody opens twice.
+
+### Changed
+
+- `subject_shape` moved into `db.py`, where thread keys are written. Two implementations of
+  "the same thread" is what 0.5.2 was spent removing, and open items was about to add a third.
+- `ingest_run()` returns the carry-forward stats instead of leaving them in a module global.
+
 ## 0.7.0 — onboarding that asks
 
 The tool shipped `rules-and-policies.md` with `_Fill this in._` in five places and

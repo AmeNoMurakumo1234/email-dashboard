@@ -48,6 +48,25 @@
     <div id="wfList"></div>
   </section>
 
+  <!-- STILL OPEN. Every other panel here answers "what arrived?", which is the right
+       question for a sweep and the wrong one for a person: a task assigned three weeks ago
+       arrived exactly once and has been invisible ever since. A brief is a delta, and
+       deltas cannot carry an obligation forward.
+
+       This is the only list on the page that gets WORSE by being ignored, so it sorts by
+       AGE rather than by importance - a three-week-old item nobody has touched matters
+       more than today's. Resolving off-channel is a first-class outcome: most things that
+       arrive by mail are finished on a call or in a chat, and with nowhere to say so the
+       only ways to clear an item are to lie or to leave it open forever. Both end with the
+       list being ignored. -->
+  <section class="panel openitems" id="openPanel" hidden>
+    <h2 class="wf-head">
+      <span>📌 Still open <span class="muted" id="openCount"></span></span>
+      <button class="linkbtn" id="openShowDone" type="button">show resolved</button>
+    </h2>
+    <div id="openList"></div>
+  </section>
+
   <!-- A SENDER YOU KNOW, POINTING SOMEWHERE IT NEVER HAS. This is the one check here that
        is noise-free by construction: it cannot fire on a stranger, and it stays silent on
        the ESP redirectors a naive does-the-domain-match test screams about. It used to

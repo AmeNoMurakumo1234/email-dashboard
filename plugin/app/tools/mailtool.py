@@ -27,6 +27,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -42,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # the first person to reach for secrets.token_urlsafe in this tree would have got a module
 # that does not have it.
 import credstore as secret_store
+import providers
 import runmode
 import untrusted
 
@@ -119,8 +121,10 @@ def ms_client_id():
 socket.setdefaulttimeout(30)
 
 
-def account_config(addr):
-    for acct in config()["accounts"]:
+def account_config(addr, cfg=None):
+    """The config block for one address. `cfg` names WHICH config, for callers that have
+    one in hand - the tests, and anything checking a config it has not installed."""
+    for acct in (cfg or config())["accounts"]:
         if acct["email"].lower() == addr.lower():
             return acct
     raise SystemExit(f"ERROR: {addr} is not in config/accounts.json")
@@ -194,9 +198,29 @@ def ms_access_token(addr):
 
 # ---------------------------------------------------------------- IMAP connect
 
-def connect(addr):
-    """Returns (imap_connection, method_used). Raises RuntimeError with a fix-it hint."""
-    acct = account_config(addr)
+def connect(addr, acct=None):
+    """Returns (imap_connection, method_used). Raises RuntimeError with a fix-it hint.
+
+    THE PROVIDER IS CHECKED BEFORE THE SOCKET IS OPENED, and it used to be the other way
+    round. `imaplib.IMAP4_SSL(acct["imap_host"])` ran on the first line, so an account that
+    should never touch IMAP still had to name a host, and a tenant with IMAP disabled -
+    which is the usual hardening step after a phishing incident, and the whole reason some
+    installs cannot use IMAP at all - failed at the connection before authentication was
+    even attempted. Worse, the error described the socket rather than the arrangement.
+    """
+    acct = acct or account_config(addr)
+    backend = providers.backend_of(acct)
+    if backend != providers.IMAP:
+        # Named as a routing decision, not as a failure. Both of these are supported
+        # configurations; this function is simply not the one that serves them.
+        raise RuntimeError(
+            "%s is configured as %s, which does not go over IMAP.\n%s"
+            % (addr, providers.LABEL.get(backend, "an unknown provider"),
+               ("  Fetch it with: python tools/msgraph.py fetch --account %s" % addr)
+               if backend == providers.GRAPH else
+               "  Nothing here fetches it - that is the configuration. Produce the run\n"
+               "  JSON however your connector allows and pipe it into\n"
+               "  `python dashboard/ingest.py`, whose docstring documents the shape."))
     conn = imaplib.IMAP4_SSL(acct["imap_host"])
     if acct["provider"] == "microsoft":
         token = ms_access_token(addr)
@@ -273,29 +297,80 @@ def config_problems(acct):
     mailtool already has a good specific message for exactly that case. The user was sent
     one step down a road that dead-ends at the very next command.
 
-    Report the FIRST thing that is wrong, not the last thing that threw.
+    The rules themselves live in providers.py, because the dashboard's setup panel asks the
+    same question and two implementations of "is this account configured?" is one too many -
+    they drift, and the one that drifts is always the one the user is looking at.
     """
-    problems = []
-    if not acct.get("email"):
-        problems.append("no \"email\" key - the config uses `email`, not `address`")
-    provider = (acct.get("provider") or "").strip()
-    if not provider:
-        problems.append("no \"provider\" - use \"microsoft\" for Outlook/365, or any other "
-                        "value for password-based IMAP")
-    if provider == "microsoft" and not (config().get("ms_client_id") or "").strip():
-        problems.append(
-            "provider is \"microsoft\" but there is no top-level \"ms_client_id\". "
-            "Microsoft sign-in needs an Entra app registration - ONE per deployment. "
-            "Without it `auth-ms` cannot run either, so authenticating is not the next "
-            "step; creating or obtaining the registration is.")
-    if provider == "graph":
-        problems.append(
-            "provider is \"graph\", which this tool does not speak - use tools/msgraph.py "
-            "for Graph accounts.")
-    elif not (acct.get("imap_host") or "").strip():
-        problems.append("no \"imap_host\" - required for every account this tool connects, "
-                        "including Microsoft ones (outlook.office365.com)")
-    return problems
+    return providers.problems(acct, config())
+
+
+# ---------------------------------------------------------------- delegating to Graph
+
+# What each command's flags are called on the other side. `mailbox` is `folder` there, and
+# everything else that matters happens to share a name.
+#
+# THE POINT OF SPELLING THIS OUT is the ELSE branch below. A delegator that quietly drops a
+# flag it cannot translate would answer a DIFFERENT QUESTION than the one asked - `fetch
+# --unseen` silently becoming "fetch everything" is a wrong answer that looks like a right
+# one, which is the failure mode this whole project is organised around. Anything not in
+# this table stops the command and says so.
+_GRAPH_FLAGS = {
+    "fetch": {"account": "--account", "mailbox": "--folder", "days": "--days",
+              "limit": "--limit", "offset": "--offset", "unseen": "--unseen",
+              "no_snippets": "--no-snippets"},
+    "body": {"account": "--account", "uid": "--uid", "out": "--out"},
+    "find": {"account": "--account", "message_id": "--message-id", "out": "--out"},
+}
+# Arguments that exist on this side, are irrelevant on the other, and may be dropped
+# without changing the meaning of the command.
+_GRAPH_IGNORE = {"cmd", "func", "account_backend"}
+
+
+def graph_argv(command, args):
+    """The msgraph.py argv this command translates to, or SystemExit saying why not.
+
+    Split out from the call so the translation can be checked without spawning anything.
+    The interesting behaviour here is the REFUSAL, and a test that had to run a subprocess
+    to observe it is a test that does not get written.
+    """
+    flags = _GRAPH_FLAGS.get(command)
+    if flags is None:
+        raise SystemExit("ERROR: %s has no Microsoft Graph equivalent.\n"
+                         "  Graph is READ-ONLY here by design - it cannot move, delete or "
+                         "flag anything." % command)
+    argv = [command]
+    for name, value in sorted(vars(args).items()):
+        if name in _GRAPH_IGNORE or value in (None, False, ""):
+            continue
+        flag = flags.get(name)
+        if flag is None:
+            raise SystemExit(
+                "ERROR: --%s has no Microsoft Graph equivalent, so this command cannot be\n"
+                "  delegated without changing what it asks for. Refusing rather than\n"
+                "  dropping it: a fetch that quietly ignores one of its own filters returns\n"
+                "  the wrong messages and looks like it worked.\n"
+                "  Run tools/msgraph.py %s directly, without --%s."
+                % (name.replace("_", "-"), command, name.replace("_", "-")))
+        if value is True:
+            argv.append(flag)
+        else:
+            argv += [flag, str(value)]
+    return argv
+
+
+def delegate_to_graph(command, args):
+    """Run the msgraph equivalent of this command and pass its output straight through.
+
+    Delegation rather than a signpost. `doctor` and `fetch` are the two commands a person
+    runs to find out whether their mail is reachable, and answering "use msgraph.py" is a
+    direction, not an answer - it also means no single command can describe an install that
+    mixes backends, which is exactly the install this release is for.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve().parent / "msgraph.py")]
+        + graph_argv(command, args),
+        text=True, encoding="utf-8", errors="replace")
+    return proc.returncode
 
 
 def cmd_doctor(args):
@@ -310,29 +385,85 @@ def cmd_doctor(args):
             "fix": "add a mailbox to config/accounts.json (see the onboard-mailbox skill)",
         }, indent=2))
         return 1
+    unreachable = 0
     for acct in targets:
         addr = acct.get("email") or "(no email key)"
+        backend = providers.backend_of(acct)
         problems = config_problems(acct)
         if problems:
             # Never open a socket on a config that cannot work: the connection error would
             # describe a symptom of the misconfiguration rather than the misconfiguration.
-            results.append({"account": addr, "status": "NOT CONFIGURED",
+            results.append({"account": addr, "backend": backend, "status": "NOT CONFIGURED",
                             "error": problems[0],
                             "all_problems": problems if len(problems) > 1 else None})
             continue
+
+        if backend == providers.CONNECTOR:
+            # NOT A FAILURE, and it must never be counted as one. This mailbox is declared
+            # as fetched by something else; there is nothing here to dial and nothing
+            # wrong. A red row against a mailbox that is working exactly as configured
+            # teaches its reader to stop reading red rows.
+            status, detail = providers.status_of(acct, config())
+            results.append({"account": addr, "backend": backend, "status": status,
+                            "note": detail})
+            unreachable += 1
+            continue
+
+        if backend == providers.GRAPH:
+            # DELEGATED, not refused. `doctor` is the one command a person runs to find out
+            # whether their mail is reachable, and it used to answer "use msgraph.py" for
+            # Graph accounts - which is a signpost, not an answer, and left the only
+            # complete picture of an install in nobody's hands.
+            res = _graph_doctor(addr)
+            results.append(dict({"account": addr, "backend": backend}, **res))
+            ok_count += 1 if res.get("status") == "CONNECTED" else 0
+            continue
+
         try:
             conn, method = connect(addr)
             typ, data = conn.select("INBOX", readonly=True)
             count = data[0].decode() if typ == "OK" else "?"
             trash = find_trash(conn)
             conn.logout()
-            results.append({"account": addr, "status": "CONNECTED", "auth": method,
-                            "inbox_messages": count, "trash_folder": trash})
+            results.append({"account": addr, "backend": backend, "status": "CONNECTED",
+                            "auth": method, "inbox_messages": count, "trash_folder": trash})
             ok_count += 1
         except Exception as exc:  # report every account regardless of individual failures
-            results.append({"account": addr, "status": "FAILED", "error": str(exc)})
-    print(json.dumps({"connected": ok_count, "total": len(targets), "accounts": results}, indent=2))
-    return 0 if ok_count == len(targets) else 1
+            results.append({"account": addr, "backend": backend, "status": "FAILED",
+                            "error": str(exc)})
+    # `connected` counts only accounts this tool actually reached, and `not_fetched_here`
+    # is reported beside it rather than folded in. Adding connector accounts to the
+    # connected count would read as "8 mailboxes verified" when some were never contacted -
+    # the reassuring summary this project keeps finding, one layer up.
+    print(json.dumps({"connected": ok_count, "total": len(targets),
+                      "not_fetched_here": unreachable,
+                      "checked": len(targets) - unreachable,
+                      "accounts": results}, indent=2))
+    return 0 if ok_count == len(targets) - unreachable else 1
+
+
+def _graph_doctor(addr):
+    """Ask msgraph.py about one account and hand back its verdict.
+
+    Shelled out rather than imported: msgraph keeps its own config and token handling, and
+    importing it here would give this process two credential stores and two opinions about
+    the authority to sign in against. The subprocess boundary is the honest one.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve().parent / "msgraph.py"),
+         "doctor", "--account", addr],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        return {"status": "FAILED",
+                "error": ((proc.stderr or proc.stdout).strip()[:500]
+                          or "msgraph.py doctor produced no output")}
+    for a in (data.get("accounts") or []):
+        if str(a.get("account", "")).lower() == addr.lower():
+            return {k: v for k, v in a.items() if k != "account"}
+    return {"status": "FAILED",
+            "error": "msgraph.py doctor did not report on %s" % addr}
 
 
 def _decode_header(value):
@@ -700,6 +831,32 @@ def main():
     ac.add_argument("--dest", help="destination folder for --action move")
 
     args = p.parse_args()
+
+    # ROUTE BEFORE DOING ANYTHING. Every command below this line assumes IMAP, and the
+    # account may not be an IMAP account at all. Done here rather than inside each command
+    # so a new command cannot forget - the failure would be silent, because an IMAP
+    # codepath given a Graph account produces a connection error that describes the socket
+    # instead of the arrangement. `doctor` is excluded: it reports on EVERY account,
+    # including ones it must not dial, and does its own per-account routing.
+    if args.cmd != "doctor" and getattr(args, "account", None):
+        try:
+            acct = account_config(args.account)
+        except SystemExit:
+            acct = None
+        if acct is not None:
+            backend = providers.backend_of(acct)
+            if backend == providers.GRAPH:
+                return delegate_to_graph(args.cmd, args)
+            if backend == providers.CONNECTOR:
+                raise SystemExit(
+                    "ERROR: %s is declared as %s.\n"
+                    "  Nothing in this tool fetches it - that is the configuration, not a\n"
+                    "  fault. Produce the run JSON however your connector allows and pipe\n"
+                    "  it into `python dashboard/ingest.py`, whose docstring documents the\n"
+                    "  shape. Everything downstream - the record, the acks, the guard, the\n"
+                    "  injection labelling - works identically on that path."
+                    % (args.account, providers.LABEL[providers.CONNECTOR]))
+
     if args.cmd == "doctor":
         return cmd_doctor(args)
     if args.cmd == "auth-ms":
