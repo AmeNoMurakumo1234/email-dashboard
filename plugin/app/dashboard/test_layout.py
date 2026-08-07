@@ -80,27 +80,28 @@ class TheTopBandHoldsWhatItShould(unittest.TestCase):
         return False
 
     def test_the_four_columns_are_inside_the_band(self):
-        for ident in ("kpis", "accountPanel", "heatPanel", "band-side"):
+        for ident in ("kpis", "accountPanel", "heatPanel"):
             self.assertTrue(self.in_band(ident),
                             "%s is outside .topband, which puts it back on its own "
                             "full-width row and undoes the whole change" % ident)
 
     def test_they_are_in_the_owners_order(self):
-        """counts, who is connected, the record, then legend and scoreboard."""
+        """counts, who is connected, then the record. The scoreboard moved to the header
+        and the legend back into the chart it describes, so the band is three columns."""
         order, seen = [], set()
         for n in self.nodes:
             if not any("topband" in (p or "") for p in n["parents"]):
                 continue
-            for ident in ("kpis", "accountPanel", "heatPanel", "band-side"):
+            for ident in ("kpis", "accountPanel", "heatPanel"):
                 if (n["id"] == ident or ident in n["class"].split()) and ident not in seen:
                     seen.add(ident)
                     order.append(ident)
-        self.assertEqual(order, ["kpis", "accountPanel", "heatPanel", "band-side"])
+        self.assertEqual(order, ["kpis", "accountPanel", "heatPanel"])
 
     def test_nothing_else_sits_between_the_header_and_the_working_area(self):
         """The rule that keeps this from creeping back: a new full-width section at the
         top of <body> costs its whole height, every time, on every screen."""
-        allowed = {"header", "alerts", "topband", "split", "footer"}
+        allowed = {"header", "topband", "split", "footer"}
         top = [n for n in self.nodes
                if n["tag"] in ("section", "div", "header", "footer", "aside")
                and not n["parents"]]
@@ -113,29 +114,40 @@ class TheTopBandHoldsWhatItShould(unittest.TestCase):
                           "%r is a new full-width row above the working area" % name)
 
 
-class TheAttentionRowIsCapped(unittest.TestCase):
+class TheAttentionPanelsAreModals(unittest.TestCase):
+    """They cost nothing until they have something to say, and then they get the screen.
 
-    def test_the_conditional_panels_share_one_row(self):
+    Inline they were the worst of both: eating the vertical space the mail needed while
+    being too short to use. Four rows of an outstanding list is not a list.
+    """
+
+    def test_each_one_lives_inside_a_modal(self):
         nodes = tree()
         for ident in ("setupPanel", "wfPanel", "openPanel", "hostPanel"):
             found = [n for n in nodes if n["id"] == ident]
             self.assertTrue(found, ident)
-            self.assertTrue(any("alerts" in (p or "") for p in found[0]["parents"]),
-                            "%s is outside .alerts, so two of them showing at once "
-                            "stacks again" % ident)
+            self.assertTrue(any("modal" in (p or "") for p in found[0]["parents"]),
+                            "%s is not in a modal, so it is back to costing header height "
+                            "on every screen" % ident)
 
-    def test_each_list_caps_its_height_and_scrolls(self):
-        """An outstanding list that grows without bound pushes the mail off the screen -
-        which turns the panel that exists to stop things being missed into the reason."""
+    def test_each_one_has_a_header_chip_to_open_it(self):
+        ids = {n["id"] for n in tree()}
+        for btn in ("setupBtn", "wfBtn", "openBtn", "hostBtn", "qOpen"):
+            self.assertIn(btn, ids, "%s has no chip, so nothing opens it" % btn)
+
+    def test_the_chips_live_in_the_header(self):
+        for n in tree():
+            if n["id"] in ("setupBtn", "wfBtn", "openBtn", "hostBtn"):
+                self.assertTrue(any("hdr-chips" in (p or "") for p in n["parents"]),
+                                "%s is not in the header chip row" % n["id"])
+
+    def test_the_lists_are_UNCAPPED_inside_the_modal(self):
+        """The inline version had to cap them or they pushed the mail off the screen. The
+        whole reason to open one of these is to see all of it, so the cap is now wrong."""
         body = css(strip_comments=True)
-        rule = re.search(r"\.alerts #wfList[^{]*\{([^}]*)\}", body)
-        self.assertIsNotNone(rule, "no cap rule for the alert lists")
-        self.assertIn("max-height", rule.group(1))
-        self.assertIn("overflow-y", rule.group(1))
-
-    def test_the_row_disappears_when_every_panel_is_hidden(self):
-        self.assertIn(".alerts:not(:has(> section:not([hidden])))", css(),
-                      "an empty attention row must cost no height at all")
+        rule = re.search(r"#openModal #openList[^{]*\{([^}]*)\}", body)
+        self.assertIsNotNone(rule, "no rule lifting the cap inside the modal")
+        self.assertIn("none", rule.group(1))
 
 
 class TheWorkingAreaFloorIsViewportAware(unittest.TestCase):

@@ -995,3 +995,59 @@ header h1 { font-size: 19px; }
 }
 .topband .account-strip::-webkit-scrollbar,
 .topband .account-grid::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* ============================================================================
+   HEADER CHIPS. Each attention panel used to sit inline above the working area,
+   where it was the worst of both: eating the space the mail needed while being
+   too short to use. Four rows of an outstanding list is not a list. A chip costs
+   nothing when it has nothing to say, and opens onto the whole screen when it does.
+   ============================================================================ */
+.hdr-chips { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.hdr-chip { white-space: nowrap; font-size: 12px; padding: 4px 10px; }
+.hdr-chip.wf   { border-color: #4aa8ff88; color: #8ec9ff; }
+.hdr-chip.open { border-color: #fbbf2488; color: #fbbf24; }
+.hdr-chip.host { border-color: #f8717188; color: #f87171; }
+.hdr-chip.q-open { border-color: var(--accent, #4a90d9); }
+
+/* The attention modals get real room - that is the whole point of moving them. */
+#setupModal .modal-card, #wfModal .modal-card,
+#openModal .modal-card, #hostModal .modal-card { width: min(1100px, 94vw); }
+#setupModal .panel, #wfModal .panel, #openModal .panel, #hostModal .panel {
+  margin: 0; border: none; background: none; padding: 0;
+}
+/* No caps in here: the reason to open one of these is to see all of it. */
+#setupModal #setupList, #wfModal #wfList, #openModal #openList, #hostModal #hostList {
+  max-height: none; overflow: visible;
+}
+.modal-x { margin-left: auto; }
+
+/* ---------- the scoreboard, in the header: wide and short ---------- */
+header .score { margin: 0; padding: 5px 12px; align-self: center; }
+.score-line { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+.score-title { font-size: 12px; font-weight: 600; }
+header .score-body { font-size: 12px; color: var(--muted); }
+header .score-rate { font-size: 15px; font-weight: 700; color: var(--text); }
+header .score-what { display: none; }   /* the "what is this?" button carries it now */
+
+/* ============================================================================
+   ACCOUNT STATUS: one width, one layout, collapsed or not.
+   It was two different shapes - a narrow single-column strip that grew into a
+   wide two-column grid - so opening it shoved the record sideways and the eye
+   had to re-find everything. Two columns always, same width always; "show
+   details" adds detail, not geometry.
+   ============================================================================ */
+.topband #accountPanel,
+.topband #accountPanel:has(#accounts:not([hidden])) { max-width: 340px; width: 340px; }
+.topband .account-strip {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px;
+  align-content: start;
+}
+.topband .acct-pill { width: 100%; justify-content: flex-start; }
+.topband .account-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* ---------- the record fills what is left ----------
+   With a year of history it is genuinely wide, and leaving a hole beside it was the
+   complaint that started all of this. It takes the remaining column; when the history is
+   short the grid centres inside it rather than the panel shrinking away from the edge. */
+.topband { grid-template-columns: auto auto minmax(0, 1fr); }
+.topband .heat { max-width: none; }

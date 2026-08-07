@@ -294,19 +294,30 @@ class AcknowledgedIsNotOutstanding(unittest.TestCase):
         opened, _ = self.s.ingest([msg(subject="Re: Statement #9912 ready")], "2026-08-01")
         self.assertEqual(opened, 0, "acknowledging the series covers each arrival of it")
 
-    def test_acknowledging_AFTERWARDS_does_not_close_an_open_item(self):
-        """The deliberate half. Seeing something is not doing it, so an item you
-        acknowledged on Monday and have not done is still open on Friday."""
+    def test_acknowledging_AFTERWARDS_does_not_RESOLVE_the_row(self):
+        """The distinction survives in the STORE even though it left the panel.
+
+        This test used to assert the item stayed in the open COUNT - the seen-is-not-done
+        rule, surfaced. That was overruled: acknowledging is how an owner may say they have
+        dealt with something, and a panel that argues with its reader about their own
+        gesture is one they stop opening. So the row keeps its `open` state and its paper trail, and
+        the count stops claiming it is outstanding.
+        """
         self.s.ingest([msg(message_id="<c@x>")], "2026-08-01")
         self.ack(message_id="<c@x>")
-        self.assertEqual(self.s.items()["open"], 1)
+        row = server.api_open_items(self.s.conn, {"state": ["open"], "acked": ["1"]})
+        self.assertEqual(row["items"][0]["state"], "open")
+        self.assertIsNone(row["items"][0]["resolved_where"],
+                          "an ack is not a resolution - nobody said how it was dealt with")
+        self.assertEqual(self.s.items()["open"], 0, "...but it is not counted as open")
 
-    def test_but_the_panel_says_it_was_acknowledged(self):
+    def test_the_row_still_records_that_it_was_acknowledged(self):
         """...and it has to SAY so, or the row reads as the tool having lost track of a
         decision the owner knows they made. That is what it looked like on a real store."""
         self.s.ingest([msg(message_id="<c@x>")], "2026-08-01")
         self.ack(message_id="<c@x>")
-        row = self.s.items()["items"][0]
+        row = server.api_open_items(
+            self.s.conn, {"state": ["open"], "acked": ["1"]})["items"][0]
         self.assertTrue(row["acknowledged"])
 
     def test_an_untouched_item_is_not_marked_acknowledged(self):
@@ -352,3 +363,45 @@ class HistoricalBatchesOpenNothing(unittest.TestCase):
                                            "ingest.py"), "--help"],
             capture_output=True, text=True).stdout
         self.assertIn("--no-open-items", out)
+
+
+class AcknowledgedLeavesTheOpenList(unittest.TestCase):
+    """The owner's ruling: acknowledging is how they say they have dealt with something.
+
+    The seen/done distinction is real and the store still keeps both - the row is not
+    deleted, not resolved, and `?acked=1` still returns it. But a panel that argues with its
+    reader about what their own gesture meant is a panel they stop opening, and being right
+    about a definition is worth less than being useful.
+    """
+
+    def setUp(self):
+        self.s = Store()
+        self.s.ingest([msg(message_id="<a@x>")], "2026-08-01")
+
+    def test_acknowledging_takes_it_out_of_the_open_count(self):
+        self.assertEqual(self.s.items()["open"], 1)          # control
+        server.api_ack(self.s.conn, {}, {"kind": "message", "message_id": "<a@x>",
+                                         "account": "owner@example.com",
+                                         "sender": "Boss <boss@example.com>",
+                                         "subject": "Please renew the lease"})
+        out = self.s.items()
+        self.assertEqual(out["open"], 0)
+        self.assertEqual(out["hidden_because_acknowledged"], 1,
+                         "a count that quietly drops to zero with no explanation is the "
+                         "same silence, just in the pleasant direction")
+
+    def test_it_is_hidden_not_lost(self):
+        server.api_ack(self.s.conn, {}, {"kind": "message", "message_id": "<a@x>",
+                                         "account": "owner@example.com",
+                                         "sender": "Boss <boss@example.com>",
+                                         "subject": "Please renew the lease"})
+        still = server.api_open_items(self.s.conn, {"state": ["open"], "acked": ["1"]})
+        self.assertEqual(still["open"], 1)
+        self.assertTrue(still["items"][0]["acknowledged"])
+        self.assertEqual(still["items"][0]["state"], "open",
+                         "the row is not resolved - the paper trail keeps the difference")
+
+    def test_an_unacknowledged_item_is_untouched(self):
+        """The control. If the filter took everything the panel would be empty forever."""
+        self.assertEqual(self.s.items()["open"], 1)
+        self.assertEqual(self.s.items()["hidden_because_acknowledged"], 0)

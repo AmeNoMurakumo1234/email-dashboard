@@ -77,6 +77,30 @@ def api_run(conn, q):
     run_id = run.get("id")
     accounts = rows(conn.execute(
         "SELECT * FROM account_status WHERE run_id = ? ORDER BY account", (run_id,))) if run_id else []
+    # ACCOUNT STATUS IS ABOUT CONNECTIVITY, NOT ABOUT A DAY IN THE PAST.
+    #
+    # A historical run - anything staged by arrival date from an intake - carries no
+    # account_status rows, because nothing connected to a mailbox on that day. The panel
+    # then said "nothing recorded for this run", which is true and reads as the tool having
+    # lost its accounts. Whether eight mailboxes are reachable is a fact about NOW.
+    #
+    # So it falls back to the most recent run that actually has a status, and says which day
+    # that was. An old answer labelled with its date is useful; a blank panel is not.
+    accounts_as_of = date
+    if not accounts:
+        # The MOST RECENT status anywhere, not the most recent BEFORE this date. Looking
+        # backwards found nothing at all here: every run older than the first sweep is a
+        # backfilled one, so "the last status before June 11th" does not exist. And it is
+        # the wrong question anyway - whether a mailbox connects is true of today, not of
+        # the day you happen to be looking at.
+        row = conn.execute(
+            "SELECT r.run_date, r.id FROM runs r JOIN account_status a ON a.run_id = r.id "
+            "GROUP BY r.id ORDER BY r.run_date DESC LIMIT 1").fetchone()
+        if row:
+            accounts = rows(conn.execute(
+                "SELECT * FROM account_status WHERE run_id = ? ORDER BY account",
+                (row["id"],)))
+            accounts_as_of = row["run_date"]
     messages = rows(conn.execute(
         "SELECT * FROM messages WHERE run_id = ? ORDER BY "
         "CASE disposition WHEN 'surfaced' THEN 0 WHEN 'kept' THEN 1 ELSE 2 END, account",
@@ -88,7 +112,8 @@ def api_run(conn, q):
 
     surfaced = [m for m in messages if m["disposition"] in ("surfaced", "kept")]
     trashed = [m for m in messages if m["disposition"] == "trashed"]
-    return {"run_date": date, "run": run, "accounts": accounts,
+    return {"run_date": date,
+        "accounts_as_of": accounts_as_of, "run": run, "accounts": accounts,
             "surfaced": surfaced, "trashed": trashed,
             "totals": {"fetched": run.get("fetched", 0), "trashed": run.get("trashed", 0),
                        "kept": run.get("kept", 0), "otp": run.get("otp", 0)}}
@@ -2044,6 +2069,16 @@ def api_open_items(conn, q):
             any(i in acked_msg for i in ids)
             or ack_key("thread", None, r.get("sender"), r.get("subject"),
                        r.get("account")) in acked_thread)
+    # ACKNOWLEDGED LEAVES THE LIST. The distinction between "seen" and "done" is real and
+    # the store still keeps both - but an owner may reasonably use acknowledging to mean
+    # "I have dealt with this", and a panel that argues with its reader about what their own
+    # gesture meant is a panel they stop using. The row is not deleted and not
+    # resolved; it is just no longer counted as OUTSTANDING, and "show resolved" still has
+    # it. Being right about a definition is worth less than being useful.
+    acked_hidden = sum(1 for r in rows if r["state"] == "open" and r["acknowledged"])
+    show_acked = (q.get("acked", ["0"])[0] or "0") == "1"
+    if not show_acked:
+        rows = [r for r in rows if not (r["state"] == "open" and r["acknowledged"])]
     n_open = sum(1 for r in rows if r["state"] == "open")
     ages = sorted(r["days_open"] for r in rows
                   if r["state"] == "open" and r["days_open"] is not None)
@@ -2069,6 +2104,7 @@ def api_open_items(conn, q):
         "oldest_days": max([r["days_open"] or 0 for r in rows if r["state"] == "open"],
                            default=0),
         "median_days": median,
+        "hidden_because_acknowledged": acked_hidden,
         "waiting_on_you_from": [{"who": k, "items": n} for k, n in who.most_common(8)],
         "resolutions": list(RESOLUTIONS),
         "state": state,

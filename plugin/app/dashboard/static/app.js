@@ -192,6 +192,7 @@ async function init() {
   await loadRun();
   loadWorkflowActions().catch(() => {}); // never let this panel block the rest of the page
   loadOpenItems().catch(() => {});
+  wireModalCloses();
   loadScoreboard().catch(() => {});
   loadNewHosts().catch(() => {});        // same: a quiet panel must never break a loud one
   loadHeatmap().catch(() => {});   // decorative-adjacent: never block the run view on it
@@ -235,13 +236,13 @@ async function loadRun() {
     $("#kpis").appendChild(k);
   });
 
-  renderAccounts(data.accounts || []);
+  renderAccounts(data.accounts || [], data.accounts_as_of);
   renderSummary(data.surfaced || []);
   await loadTrash();
 }
 
-function renderAccounts(accounts) {
-  renderAccountStrip(accounts);
+function renderAccounts(accounts, asOf) {
+  renderAccountStrip(accounts, asOf);
   const wrap = $("#accounts");
   wrap.innerHTML = "";
   if (!accounts.length) {
@@ -289,18 +290,25 @@ function statusOf(a) {
   return "unknown";
 }
 
-function renderAccountStrip(accounts) {
+function renderAccountStrip(accounts, asOf) {
   const strip = $("#accountStrip");
   const summary = $("#acctSummary");
   strip.innerHTML = "";
   if (!accounts.length) {
-    summary.textContent = "- nothing recorded for this run";
+    // No run at all on this day is a different statement from "the accounts are unknown".
+    summary.textContent = "- no run on this day";
     summary.style.color = "";
     return;
   }
   const n = (k) => accounts.filter((a) => statusOf(a) === k).length;
   const ok = n("ok"), bad = n("fail"), unk = n("unknown");
+  // "as of" when the status came from a different day. A historical run - anything staged
+  // by arrival from an intake - has no account status of its own, because nothing connected
+  // to a mailbox that day. Whether eight mailboxes are reachable is a fact about NOW, so an
+  // old answer WITH ITS DATE beats a blank panel, and a bare old answer without the date
+  // would be the worst of the three.
   const bits = [`${ok}/${accounts.length} connected`];
+  if (asOf && asOf !== currentDate) bits.push(`as of ${asOf}`);
   if (bad) bits.unshift(`${bad} FAILED`);
   if (unk) bits.push(`${unk} unrecognised status`);
   summary.textContent = "- " + bits.join(", ");
@@ -1286,6 +1294,40 @@ async function loadFeatures() {
 
 // ---------- first run: what still needs doing, and how to do it ----------
 
+
+// ---------- header chips: attention costs nothing until it has something to say ----------
+//
+// These four panels used to sit inline above the working area, where they were the worst of
+// both worlds: they ate the vertical space the mail needed AND were too short to use. A
+// four-row window onto an outstanding list is not a list. As a chip each costs nothing when
+// it is empty, and opens onto the whole screen when it is not.
+const ATTN_MODALS = ["setupModal", "wfModal", "openModal", "hostModal"];
+
+function chip(btnId, modalId, label, count) {
+  const b = $("#" + btnId);
+  if (!b) return;
+  b.hidden = !count;
+  b.textContent = count > 1 ? label + " (" + count + ")" : label;
+  b.onclick = () => { $("#" + modalId).hidden = false; };
+}
+
+function wireModalCloses() {
+  document.querySelectorAll("[data-close]").forEach((b) => {
+    b.onclick = () => { $("#" + b.dataset.close).hidden = true; };
+  });
+  ATTN_MODALS.forEach((id) => {
+    const m = $("#" + id);
+    if (m) m.addEventListener("click", (e) => { if (e.target === m) m.hidden = true; });
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    ATTN_MODALS.forEach((id) => {
+      const m = $("#" + id);
+      if (m && !m.hidden) m.hidden = true;
+    });
+  });
+}
+
 async function loadSetup() {
   let data;
   try { data = await get("/api/setup"); } catch (e) { return; }
@@ -1301,8 +1343,9 @@ async function loadSetup() {
   // and no one is shown it. When only advisory steps remain the panel stays, but quietly:
   // one line and a button, not a block of unfinished business.
   const onlyAdvisory = outstanding.length > 0 && outstanding.every((s) => s.advisory);
-  panel.hidden = outstanding.length === 0;
+  panel.hidden = false;                 // it lives in a modal; the chip decides visibility
   panel.classList.toggle("setup-advisory", onlyAdvisory);
+  chip("setupBtn", "setupModal", "Finish setting up", outstanding.length);
 
   // The header entry point is driven from the same payload and is INDEPENDENT of whether
   // the setup panel is showing. On this install the rules step reported itself done - no
@@ -1313,10 +1356,11 @@ async function loadSetup() {
   const opener = $("#qOpen");
   opener.hidden = !waiting;
   opener.textContent = waiting === 1 ? "1 question" : `${waiting} questions`;
+  opener.onclick = openQuestions;
   opener.title = "Questions generated from your own mail. Answering them is how this " +
                  "tool learns your rules instead of assuming them.";
 
-  if (panel.hidden) return;
+  if (outstanding.length === 0) return;
 
   const left = outstanding.length;
   $("#setupCount").textContent =
@@ -1626,15 +1670,17 @@ async function loadScoreboard() {
   // mail, so every line it takes is a line of email somebody does not see. The months it
   // compared, the caveat about volume, and the note about an empty guard all live behind
   // "why?" - present, one click away, and not costing height on every screen forever.
+  // ONE LINE. In the header there is no room for three, and there does not need to be:
+  // the number, which way it is moving, and how many came from people who matter. The
+  // months compared and the volume caveat are behind "what is this?".
   body.innerHTML =
-    `<div><span class="score-rate">${rate === null ? "—" : rate}</span> ` +
-    `<span class="muted">per hundred msgs</span> ` +
+    `<span class="score-rate">${rate === null ? "—" : rate}</span> ` +
+    `<span class="muted">per 100</span> ` +
     `<span class="score-dir ${esc(t.direction || "unknown")}">${arrow} ` +
-    `${esc(t.direction || "")}</span></div>` +
-    (d.protected_known
-      ? `<div class="muted">${last ? last.from_people_who_matter : 0} from people ` +
-        `who matter</div>`
-      : `<div class="muted">nobody on the protected list yet</div>`);
+    `${esc(t.direction || "")}</span>` +
+    (d.protected_known && last && last.from_people_who_matter
+      ? ` <span class="muted">· ${last.from_people_who_matter} from people ` +
+        `who matter</span>` : "");
 
   // The caveat is one click away rather than inline, but it is never absent: a direction
   // without the volume behind it is how "quiet month" gets read as "tool working".
@@ -1652,21 +1698,26 @@ async function loadOpenItems() {
   }
   const panel = $("#openPanel");
   const items = data.items || [];
+  chip("openBtn", "openModal", "Still open", data.open || 0);
   // Hidden only when there is genuinely nothing outstanding AND nothing to review. A
   // standing list that is always on screen becomes furniture; one that hides when empty
   // means something every time it appears.
-  panel.hidden = items.length === 0;
-  if (panel.hidden) return;
+  panel.hidden = false;
+  if (items.length === 0) return;
 
   // The count says OPEN and OLDEST, because those are the two facts that decide whether
   // this panel is worth reading today. "4 items" says neither.
   // MEDIAN BESIDE OLDEST. Length says nothing about whether this list is working: one
   // that churns is fine however long it is, and one whose median age climbs every week is
   // being ignored however short. A length target would push toward hiding things.
+  // Said out loud. "1 open" quietly becoming "0 open" with no explanation is the same
+  // silence this project keeps arguing against, just in the pleasant direction.
+  const acked = data.hidden_because_acknowledged || 0;
   $("#openCount").textContent =
     `(${data.open} open` +
     (data.oldest_days ? `, oldest ${data.oldest_days}d` : "") +
     (data.median_days ? `, median ${data.median_days}d` : "") +
+    (acked ? ` · ${acked} acknowledged, not counted` : "") +
     (data.resolved_off_channel
       ? ` · ${data.resolved_off_channel} closed elsewhere`
       : "") +
@@ -1806,8 +1857,12 @@ async function loadWorkflowActions() {
   // Hidden entirely when nothing is outstanding, so its presence always means something.
   // A dated visit still weeks away does NOT keep it open - it is carried on one quiet line
   // underneath instead, so it is never lost but never shouts either.
-  panel.hidden = !shown.length && !upcoming.length;
-  if (panel.hidden) return;
+  // The chip carries the count; the panel itself lives in a modal and is always "shown"
+  // once opened. `live` rather than `shown` because a dated visit weeks out is carried on
+  // a quiet line, and a chip that shouts about it every day is one nobody reads.
+  chip("wfBtn", "wfModal", "Needs you to do something", live.length);
+  panel.hidden = false;
+  if (!shown.length && !upcoming.length) return;
 
   $("#wfCount").textContent = wfShowDone
     ? `(${all.length} total, ${live.length} outstanding)`
@@ -1884,8 +1939,9 @@ async function loadNewHosts() {
   const reviewed = data.reviewed || [];
   const shown = hostShowDone ? open.concat(reviewed) : open;
   const panel = $("#hostPanel");
-  panel.hidden = !shown.length;
-  if (panel.hidden) return;
+  chip("hostBtn", "hostModal", "New link host", open.length);
+  panel.hidden = false;
+  if (!shown.length) return;
 
   $("#hostCount").textContent = hostShowDone
     ? `(${open.length} unreviewed of ${data.ever_flagged} ever flagged)`

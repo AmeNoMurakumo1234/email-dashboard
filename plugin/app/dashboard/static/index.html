@@ -16,11 +16,29 @@
          install is sound, and the questions do not stop arriving when it does - a mailbox
          keeps producing new senders. Behind the setup panel they would have been offered
          on day one and never again. Hidden only when there is genuinely nothing to ask. -->
-    <button id="qOpen" class="btn q-open" type="button" hidden></button>
+    <!-- One chip per thing wanting attention. Hidden entirely when it has nothing to
+         say, so the header stays quiet on a healthy day and every chip that IS there
+         means something. -->
+    <div class="hdr-chips">
+      <button id="setupBtn" class="btn hdr-chip" type="button" hidden></button>
+      <button id="wfBtn" class="btn hdr-chip wf" type="button" hidden></button>
+      <button id="openBtn" class="btn hdr-chip open" type="button" hidden></button>
+      <button id="hostBtn" class="btn hdr-chip host" type="button" hidden></button>
+      <button id="qOpen" class="btn hdr-chip q-open" type="button" hidden></button>
+    </div>
     <div class="run-picker">
       <label for="runSelect">Run</label>
       <select id="runSelect"></select>
     </div>
+    <!-- Wide and short, in the header: it is one number and a direction, and it was
+         sitting in the band as a tall box with air around it. -->
+    <section class="panel score" id="scorePanel">
+      <div class="score-line">
+        <span class="score-title">🎯 Before they went elsewhere</span>
+        <span class="score-body" id="scoreBody">loading…</span>
+        <button class="linkbtn" id="scoreWhy" type="button" hidden>what is this?</button>
+      </div>
+    </section>
   </header>
 
   <!-- THE ATTENTION ROW. Four conditional panels that each hid themselves when empty -
@@ -29,24 +47,35 @@
        cost the tallest, and each caps its own list and scrolls inside it, so a long
        outstanding list can no longer push the mail off the screen. Every one of them still
        disappears entirely when it has nothing to say. -->
-  <div class="alerts">
-    <!-- FIRST RUN. A fresh install used to look BROKEN rather than NEW: every panel rendered
-         an honest empty state, which is indistinguishable from a tool that is failing, and the
-         one thing it never said was the only thing a new user needs - you have no mailboxes
-         yet, here is the next step. Shown only while something is outstanding, and it removes
-         itself the moment the last step is done, so it never becomes furniture. -->
+  <!-- THE ATTENTION PANELS ARE MODALS NOW.
+       Inline they were the worst of both: they ate the vertical space the mail needed
+       AND were too short to use - a to-do list you scroll four rows at a time is not a
+       to-do list. As a header chip each one costs nothing until it has something to say,
+       and when it does you get the whole screen to deal with it. -->
+  <div id="setupModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Finish setting up</h3>
+        <button class="btn modal-x" type="button" data-close="setupModal">Close</button>
+      </div>
+      <div class="modal-body">
     <section class="panel setup" id="setupPanel" hidden>
       <h2 class="setup-head">
         <span>👋 Finish setting up <span class="muted" id="setupCount"></span></span>
       </h2>
       <div id="setupList"></div>
     </section>
+      </div>
+    </div>
+  </div>
 
-    <!-- WORKFLOW ACTIONS. The one category where a missed link costs something that cannot
-         be recovered - a questionnaire due before a visit, a video appointment whose join
-         link arrives half an hour beforehand. Sits above everything else and hides itself
-         entirely when there is nothing outstanding, so its presence always means something.
-         WHICH senders carry a workflow is configuration; this panel names no organisation. -->
+  <div id="wfModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Needs you to do something</h3>
+        <button class="btn modal-x" type="button" data-close="wfModal">Close</button>
+      </div>
+      <div class="modal-body">
     <section class="panel workflow" id="wfPanel" hidden>
       <h2 class="wf-head">
         <span>⚕ Needs you to do something <span class="muted" id="wfCount"></span></span>
@@ -54,18 +83,17 @@
       </h2>
       <div id="wfList"></div>
     </section>
+      </div>
+    </div>
+  </div>
 
-    <!-- STILL OPEN. Every other panel here answers "what arrived?", which is the right
-         question for a sweep and the wrong one for a person: a task assigned three weeks ago
-         arrived exactly once and has been invisible ever since. A brief is a delta, and
-         deltas cannot carry an obligation forward.
-
-         This is the only list on the page that gets WORSE by being ignored, so it sorts by
-         AGE rather than by importance - a three-week-old item nobody has touched matters
-         more than today's. Resolving off-channel is a first-class outcome: most things that
-         arrive by mail are finished on a call or in a chat, and with nowhere to say so the
-         only ways to clear an item are to lie or to leave it open forever. Both end with the
-         list being ignored. -->
+  <div id="openModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Still open</h3>
+        <button class="btn modal-x" type="button" data-close="openModal">Close</button>
+      </div>
+      <div class="modal-body">
     <section class="panel openitems" id="openPanel" hidden>
       <h2 class="wf-head">
         <span>📌 Still open <span class="muted" id="openCount"></span></span>
@@ -74,14 +102,17 @@
       <div class="quiet-reach muted" id="openWho" hidden></div>
       <div id="openList"></div>
     </section>
+      </div>
+    </div>
+  </div>
 
-    <!-- A SENDER YOU KNOW, POINTING SOMEWHERE IT NEVER HAS. This is the one check here that
-         is noise-free by construction: it cannot fire on a stranger, and it stays silent on
-         the ESP redirectors a naive does-the-domain-match test screams about. It used to
-         print to a terminal and live only in that day's prose, which made the sharpest signal
-         in this lane also the easiest to scroll past.
-         Hidden whenever nothing is unreviewed - and a verdict retires the pairing for good,
-         so this can sit on the page without becoming the noise it exists to cut through. -->
+  <div id="hostModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>A known sender used a new link host</h3>
+        <button class="btn modal-x" type="button" data-close="hostModal">Close</button>
+      </div>
+      <div class="modal-body">
     <section class="panel hosts" id="hostPanel" hidden>
       <h2 class="wf-head">
         <span>🔗 A known sender used a new link host <span class="muted" id="hostCount"></span></span>
@@ -89,15 +120,8 @@
       </h2>
       <div id="hostList"></div>
     </section>
-
-
-    <!-- ONE BAND, NOT FOUR STACKED ROWS.
-         These used to be four full-width sections one under another, and on a 900px screen
-         they ate 638 pixels before the working panels started - which left the two panels
-         people actually read sharing 408, about two emails at a time, on a page that then
-         scrolled. Side by side they cost the height of the tallest one instead of the sum of
-         all of them. The order is the owner's: counts, then who is connected, then the
-         record, then the legend and the scoreboard. -->
+      </div>
+    </div>
   </div>
 
   <div class="topband">
@@ -132,20 +156,6 @@
          did; this counts how often somebody gave up on the inbox and went elsewhere
          to find them. It is small on purpose - one number, its direction, and the
          caveat that stops a quiet month reading as a win. -->
-    <aside class="band-side">
-      <section class="panel score" id="scorePanel">
-        <div class="score-head">
-          <span>🎯 Before they went elsewhere</span>
-          <button class="linkbtn" id="scoreWhy" type="button" hidden>what is this?</button>
-        </div>
-        <div class="score-body" id="scoreBody">loading…</div>
-        <!-- WITHOUT THIS LINE THE TILE IS A NUMBER AND A RIDDLE. Every other panel here is
-             self-evident from its title; this one measures something the tool has never
-             named before, so it has to say what it counts on the face of it. -->
-        <div class="score-what">how often someone gave up on your inbox and messaged you
-          somewhere else instead</div>
-      </section>
-    </aside>
   </div>
 
   <div class="split">

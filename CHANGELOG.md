@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.12.1 — acknowledged leaves the list
+
+**Acknowledged no longer counts as outstanding.** The seen/done distinction is real, and it
+was defended twice before the owner overruled it twice — which makes it their call. If
+acknowledging is how you say you have dealt with something, a panel that argues with you
+about what your own gesture meant is a panel you stop opening.
+
+The distinction survives where it costs nothing: the row keeps its `open` state and its
+paper trail, it is **not** marked resolved (nobody said *how* it was dealt with), and
+`?acked=1` still returns it. Only what the panel claims is outstanding changed — and it says
+what it hid: *"1 acknowledged, not counted"*. A count quietly dropping to zero is the same
+silence this project argues against, in the pleasant direction.
+
+**Account status is one shape.** It was a narrow single-column strip that grew into a wide
+two-column grid, so opening details shoved the record sideways and the eye had to re-find
+everything. Two columns always, one width always — "show details" adds detail, not geometry.
+
+**The gap beside the record is gone.** It takes the remaining column rather than hugging its
+content.
+
+## 0.12.0 — the chrome gets out of the way
+
+Measured at 1280×720: **230 pixels above the working area**, down from 342 and from 638
+before any of this. The two panels people actually read get **463**.
+
+### Changed — the attention panels are modals, opened by header chips
+
+Inline they were the worst of both: they ate the vertical space the mail needed **and** were
+too short to use. A four-row window onto an outstanding list is not a list — you cannot
+decide anything through it, and it costs you the mail underneath for the privilege.
+
+A chip costs nothing when it has nothing to say, and opens a 1100px modal with the height
+caps lifted when it does. The whole reason to open one is to see all of it.
+
+### Changed — the scoreboard is one line in the header
+
+It was a tall box with air around it in the middle of the band. It is a number and a
+direction; that is one line. The months compared and the volume caveat live behind
+*"what is this?"*.
+
+### Fixed — account status on a historical run
+
+It said *"nothing recorded for this run"* on every backfilled day. Correct, and useless: a
+historical run has no account status because nothing connected to a mailbox that day, but
+whether your mailboxes are reachable is a fact about **now**. It falls back to the most
+recent status and **labels it** — `9/9 connected, as of 2026-08-07`. An old answer with its
+date beats a blank panel; an old answer without its date would be worse than both.
+
 ## 0.11.2 — dates that mean what they say
 
 ### Fixed — a historical batch belongs to the days it happened on
