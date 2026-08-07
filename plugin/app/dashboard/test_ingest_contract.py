@@ -144,3 +144,58 @@ class StrictRefuses(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class StagedByArrival(unittest.TestCase):
+    """A historical batch belongs to the days it happened on, not to the day we read it.
+
+    Ingesting a year of old mail as one run put all of it into TODAY, so today's summary
+    reported a refund notice from last September as this morning's news. The calendar had
+    already been fixed to key on arrival and looked correct throughout - which is exactly
+    why this went unnoticed: one view had been corrected and the other had not.
+    """
+
+    def doc(self, *dates):
+        return {"run_date": "2026-08-07",
+                "messages": [dict(GOOD, message_id="<%s@x>" % d, msg_date=d) for d in dates]}
+
+    def ingest(self, doc, *flags):
+        path = os.path.join(tempfile.mkdtemp(), "run.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8",
+                   EMAIL_DASHBOARD_DB=os.path.join(tempfile.mkdtemp(), "t.db"))
+        r = subprocess.run(
+            [sys.executable, os.path.join(HERE, "ingest.py"), "--file", path] + list(flags),
+            capture_output=True, text=True, env=env)
+        return r, env["EMAIL_DASHBOARD_DB"]
+
+    def rows(self, dbpath):
+        conn = db.connect(dbpath)
+        return sorted(tuple(r) for r in conn.execute(
+            "SELECT run_date, msg_day FROM messages ORDER BY msg_day"))
+
+    def test_each_message_lands_in_the_run_for_the_day_it_arrived(self):
+        r, dbp = self.ingest(self.doc("2025-09-12", "2025-11-03", "2026-08-07"),
+                             "--by-arrival")
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        for run_date, msg_day in self.rows(dbp):
+            self.assertEqual(run_date, msg_day,
+                             "a backfilled message must sit in the run for its own day")
+        self.assertEqual(json.loads(r.stdout)["runs_touched"], 3)
+
+    def test_without_the_flag_it_still_files_everything_under_the_run_date(self):
+        """The control. Staging by arrival must be something you ask for: a daily sweep
+        genuinely IS one run, and splitting it would be its own misrepresentation."""
+        r, dbp = self.ingest(self.doc("2025-09-12", "2026-08-07"))
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        self.assertEqual({rd for rd, _ in self.rows(dbp)}, {"2026-08-07"})
+
+    def test_mail_with_no_readable_date_is_refused_rather_than_filed_under_today(self):
+        """Guessing is how a message from last year becomes today's news - the exact bug
+        this flag exists to prevent, reintroduced by the fix for it."""
+        doc = self.doc("2025-09-12")
+        doc["messages"].append(dict(GOOD, message_id="<nodate@x>", msg_date=""))
+        r, _ = self.ingest(doc, "--by-arrival")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no readable date", r.stderr)

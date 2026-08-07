@@ -756,7 +756,19 @@ function mvOpen(row) {
   mvCurrent = row;
   $("#msgModal").hidden = false;
   $("#mvSubject").textContent = row.subject || "(no subject)";
-  $("#mvMeta").textContent = `${row.sender || "unknown sender"} - ${row.account} - ${row.run_date}`;
+  // WHEN THE MAIL ARRIVED, not when we got around to reading it. This showed `run_date`,
+  // which is the day the sweep ran - so after a historical intake every message in it read
+  // as having arrived today, and a refund notice from last September was presented as
+  // this morning's mail. Same defect the calendar was fixed for; it survived here because
+  // this line was never the one anybody looked at while fixing that.
+  //
+  // The sweep date is still shown when it differs, because "I read this eleven months
+  // late" is a real fact about the tool and hiding it would be its own small lie.
+  const arrived = row.msg_day || (row.msg_date || "").slice(0, 10) || row.run_date;
+  const swept = row.run_date && row.run_date !== arrived
+    ? ` · swept ${row.run_date}` : "";
+  $("#mvMeta").textContent =
+    `${row.sender || "unknown sender"} - ${row.account} - ${arrived}${swept}`;
   $("#mvText").textContent = "Loading...";
   $("#mvFrame").hidden = true;
   $("#mvText").hidden = false;
@@ -1713,6 +1725,7 @@ function openRow(it) {
     main.addEventListener("click", () =>
       mvOpen({
         subject: it.subject, sender: it.sender, account: it.account,
+        msg_day: it.first_seen,          // when the mail arrived
         run_date: it.last_seen || it.first_seen,
         message_id: it.kind === "message" ? it.key : null,
         open_item: true,

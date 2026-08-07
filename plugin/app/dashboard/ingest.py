@@ -109,6 +109,10 @@ def main():
                     help="ADD to this run_date instead of replacing it. Replace is right "
                          "for a daily sweep and wrong for a batched intake, where every "
                          "batch would otherwise have to re-send everything already sent.")
+    ap.add_argument("--by-arrival", action="store_true", dest="by_arrival",
+                    help="stage one run per ARRIVAL DAY instead of putting everything in "
+                         "one - for a historical intake, where the sweep date is not when "
+                         "the mail happened")
     ap.add_argument("--no-open-items", action="store_true", dest="no_open_items",
                     help="ingest the mail but do not open standing to-do items - for a "
                          "HISTORICAL batch, where nine-month-old action-needed is history "
@@ -241,6 +245,45 @@ def main():
         print("REFUSING to ingest (--strict): fix the labels, the missing Message-IDs "
               "and/or the unrecognised keys, then re-run.", file=sys.stderr)
         return 2
+
+    if args.by_arrival:
+        # ONE RUN PER ARRIVAL DAY. Everything in a historical batch shares one sweep date,
+        # so ingesting it as a single run puts a year of old mail into TODAY - and today's
+        # summary then reports a refund notice from last September as this morning's news.
+        # The calendar was already keyed on arrival and looked right, which is exactly why
+        # this went unnoticed: one view had been fixed and the other had not.
+        #
+        # Each message is filed under the day it actually arrived, so the run it belongs to
+        # is the run that would have found it.
+        by_day = {}
+        undated = []
+        for m in messages:
+            day = db.msg_day(m.get("msg_date"), None)
+            (by_day.setdefault(day, []) if day else undated).append(m)
+        if undated:
+            # Refused rather than guessed. Filing mail with no readable date under today
+            # is how a message from last year becomes today's news, which is the bug this
+            # flag exists to prevent.
+            print("REFUSING (--by-arrival): %d message(s) have no readable date, so there "
+                  "is no day to file them under. Fix their msg_date or ingest them "
+                  "separately." % len(undated), file=sys.stderr)
+            return 2
+        total_written = opened_all = 0
+        for day in sorted(by_day):
+            rid, rep, st = db.ingest_run(
+                day, accounts=[], messages=by_day[day], notes=data.get("notes"),
+                append=True, open_items=not args.no_open_items)
+            total_written += len(by_day[day])
+            opened_all += st["opened"]
+        print(json.dumps({
+            "ok": True, "mode": "by-arrival", "runs_touched": len(by_day),
+            "days": [min(by_day), max(by_day)],
+            "written": total_written, "linked": linked, "mapped": mapped,
+            "unmapped_labels": unmapped, "ignored_keys": sorted(ignored),
+            "injection_flagged": flagged, "opened": opened_all,
+            "open_items_suppressed": bool(args.no_open_items),
+        }))
+        return 0
 
     run_id, replaced, open_stats = db.ingest_run(
         run_date, accounts=accounts, messages=messages, notes=data.get("notes"),
