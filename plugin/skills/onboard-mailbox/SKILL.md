@@ -97,6 +97,18 @@ Exactly three keys per account, and the names matter — the code reads `email`,
 | `graph` | `tools/msgraph.py`, over Microsoft Graph | `ms_client_id`. **No `imap_host`** |
 | `connector` | something else entirely — you pipe JSON into `dashboard/ingest.py` | nothing |
 
+**Send two extra fields and the mailbox becomes readable.** Declaring a connector account
+tells the tool the mailbox exists; these are what make a message openable:
+
+| field | what it buys |
+|---|---|
+| `body_text` | the **sandboxed reader works with no fetch at all** — text-first view, blocked images, tracking-host report. Raw MIME or just the body; either is accepted |
+| `web_link` | an explicit, labelled *"open in your mail client"* button. It leaves the sandbox — images and tracking load, because your provider renders it — so it is offered, never used silently |
+
+`body_text` is the one that matters. Without it, the privacy features that are the point of
+this tool are unreachable for every row on a connector install. Most connectors can return a
+message body; if yours can, send it.
+
 **Declare a connector mailbox anyway.** It is tempting to leave it out of `accounts.json`
 since nothing here fetches it, and that is what people did — with the result that nothing in
 the tool knows the mailbox exists. `doctor` cannot report it, the setup panel cannot count

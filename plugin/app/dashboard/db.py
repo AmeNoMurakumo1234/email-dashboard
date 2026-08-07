@@ -69,7 +69,22 @@ CREATE TABLE IF NOT EXISTS messages (
     injection_signals TEXT,                     -- JSON list; mail addressed to the TRIAGER, not to a person
     recipients   TEXT,                          -- To + Cc, as received
     recipient_count INTEGER,                    -- how many people got it; NULL = unknown
-    addressed_directly INTEGER                  -- 1 = this mailbox is in To (not merely Cc); NULL = unknown
+    addressed_directly INTEGER,                 -- 1 = this mailbox is in To (not merely Cc); NULL = unknown
+    -- THE TWO COLUMNS THAT MAKE A CONNECTOR INSTALL USABLE.
+    --
+    -- Declaring that something else fetches your mail did not make a single message
+    -- openable, so on that class of install the entire viewer - the sandboxed reader, the
+    -- image blocking, the tracking-host report, which are the headline privacy features -
+    -- was unreachable for every row. The instinct that added recipients applies here too:
+    -- CARRY MORE OF WHAT THE FETCHER SAW.
+    --
+    -- body_text is the one that matters. With it the sanitising reader works with no fetch
+    -- at all. web_link is the cheaper half: every Graph and connector result already
+    -- carries a direct URL to that message, and "opens in your mail client, images and
+    -- all" is a labelled, explicit affordance rather than a silent fallback - but it beats
+    -- cannot open.
+    body_text    TEXT,                          -- raw MIME, or just the text/html body
+    web_link     TEXT                           -- provider URL to this message, if any
 );
 
 CREATE INDEX IF NOT EXISTS idx_msg_run     ON messages(run_id);
@@ -307,6 +322,9 @@ def init_db(conn=None):
         if "msg_day" not in mcols:
             conn.execute("ALTER TABLE messages ADD COLUMN msg_day TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_day ON messages(msg_day)")
+        for col, ddl in (("body_text", "TEXT"), ("web_link", "TEXT")):
+            if col not in mcols:
+                conn.execute("ALTER TABLE messages ADD COLUMN %s %s" % (col, ddl))
         _backfill_msg_day(conn)
         _reconcile_concepts(conn)
 
@@ -747,7 +765,7 @@ def carry_open_items(conn, messages, run_date):
 # consumed; a contract that lives away from its implementation is one that drifts.
 MESSAGE_FIELDS = frozenset((
     "account", "sender", "subject", "msg_date", "disposition", "category", "reason",
-    "importance", "message_id", "injection_signals", "to", "cc",
+    "importance", "message_id", "injection_signals", "to", "cc", "body_text", "web_link",
 ))
 
 RUN_FIELDS = frozenset(("run_date", "notes", "accounts", "messages", "steam_sales"))
@@ -871,8 +889,9 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
                 "INSERT INTO messages "
                 "(run_id, run_date, account, sender, subject, msg_date, msg_day, "
                 "disposition, category, concept, reason, importance, message_id, "
-                "injection_signals, recipients, recipient_count, addressed_directly) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "injection_signals, recipients, recipient_count, addressed_directly, "
+                "body_text, web_link) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, run_date, m.get("account"), m.get("sender"), m.get("subject"),
                  m.get("msg_date"),
                  # Normalised on WRITE, falling back to the run date so every row has a
@@ -884,7 +903,8 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
                  (m.get("message_id") or "").strip() or None,
                  json.dumps(m["injection_signals"]) if m.get("injection_signals")
                  else None,
-                 *recipients_of(m, m.get("account"))),
+                 *recipients_of(m, m.get("account")),
+                 (m.get("body_text") or None), (m.get("web_link") or None)),
             )
         opened, still_open = carry_open_items(conn, messages, run_date)
         conn.commit()

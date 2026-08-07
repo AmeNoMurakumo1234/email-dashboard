@@ -819,6 +819,33 @@ async function mvLoad(wantHtml) {
     // backend never connected - telling someone their message was probably deleted, about
     // mail sitting in their inbox. An absence is only reportable by an instrument that ran.
     let msg = res.error || "could not retrieve";
+    // NO LOCAL FETCHER IS A THIRD STATE, and it used to render as the first one - "not
+    // found in this mailbox" above a detail that correctly said nothing had gone looking.
+    // The headline contradicted its own explanation, about mail sitting untouched in
+    // someone's inbox.
+    if (res.reason === "no_local_fetcher") {
+      $("#mvText").textContent =
+        (res.detail || "") + (res.hint ? "\n\n" + res.hint : "");
+      const link = res.web_link;
+      const box = $("#mvSafety");
+      if (link) {
+        // LABELLED, never a silent fallback. This leaves the sandbox entirely: it opens in
+        // the provider's own UI, with images, tracking pixels and all. Saying so is the
+        // difference between an informed choice and the tool quietly undoing its own
+        // headline privacy feature.
+        box.innerHTML =
+          '<a class="mv-external" target="_blank" rel="noopener noreferrer" href="' +
+          esc(link) + '">Open in your mail client &#8599;</a>' +
+          '<div class="mv-hosts">Leaves this viewer. Images and tracking will load, ' +
+          'because the message is rendered by your mail provider, not here.</div>';
+      } else {
+        box.innerHTML =
+          '<div class="mv-hosts">Nothing to open with. Supply <code>body_text</code> at ' +
+          'ingest to read messages here, or <code>web_link</code> to open them in your ' +
+          'mail client.</div>';
+      }
+      return;
+    }
     if (res.searched) {
       msg += "\n\nTrashed mail is recoverable for about 30 days; older items may be gone.";
     } else {
@@ -1550,13 +1577,26 @@ async function loadOpenItems() {
 
   // The count says OPEN and OLDEST, because those are the two facts that decide whether
   // this panel is worth reading today. "4 items" says neither.
+  // MEDIAN BESIDE OLDEST. Length says nothing about whether this list is working: one
+  // that churns is fine however long it is, and one whose median age climbs every week is
+  // being ignored however short. A length target would push toward hiding things.
   $("#openCount").textContent =
     `(${data.open} open` +
-    (data.oldest_days ? `, oldest ${data.oldest_days} days` : "") +
+    (data.oldest_days ? `, oldest ${data.oldest_days}d` : "") +
+    (data.median_days ? `, median ${data.median_days}d` : "") +
     (data.resolved_off_channel
       ? ` · ${data.resolved_off_channel} closed elsewhere`
       : "") +
     ")";
+
+  // WHO IS WAITING, not just how many things. The owner acts by person: four asks from one
+  // colleague is one conversation, four from four people is four.
+  const whoBox = $("#openWho");
+  const who = data.waiting_on_you_from || [];
+  whoBox.hidden = who.length < 2;
+  whoBox.innerHTML = who.length < 2 ? "" :
+    "waiting on you: " +
+    who.map((w) => `${esc(w.who)}${w.items > 1 ? ` ×${w.items}` : ""}`).join(" · ");
 
   const wrap = $("#openList");
   wrap.innerHTML = "";
@@ -1585,9 +1625,14 @@ function openRow(it) {
   const acts = el("div", "open-actions");
   if (it.state === "resolved") {
     const note = el("div", "open-resolved");
-    note.textContent =
-      `resolved ${it.resolved_where === "off-channel" ? "elsewhere" : it.resolved_where}` +
-      (it.resolved_note ? ` — ${it.resolved_note}` : "");
+    const said = {
+      "off-channel": "resolved elsewhere",
+      "email": "resolved here",
+      "declined": "not doing this",
+      "expired": "expired",
+      "moot": "not doing this",
+    }[it.resolved_where] || `resolved ${it.resolved_where}`;
+    note.textContent = said + (it.resolved_note ? ` — ${it.resolved_note}` : "");
     acts.appendChild(note);
     const reopen = el("button", "btn");
     reopen.textContent = "Reopen";
@@ -1596,10 +1641,14 @@ function openRow(it) {
   } else {
     // THREE OUTCOMES, not one. "Done" alone forces a person to record a lie for anything
     // that was settled on a call, and a list you have to lie to is a list you stop using.
+    // FOUR EXITS, and three of them are not "done". A standing list whose only way out is
+    // completion becomes a graveyard - and a graveyard is what teaches its reader to skim
+    // past the one live item. "Not doing this" is a decision, and deciding is finishing.
     [
       ["Done here", "email"],
       ["Done elsewhere", "off-channel"],
-      ["No longer relevant", "moot"],
+      ["Not doing this", "declined"],
+      ["Expired", "expired"],
     ].forEach(([label, where]) => {
       const b = el("button", "btn");
       b.textContent = label;

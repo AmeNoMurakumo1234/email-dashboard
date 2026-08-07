@@ -38,9 +38,19 @@ class UnknownFieldsAreNamed(unittest.TestCase):
         """The control. If this ever reports a key, every other test here is meaningless."""
         self.assertEqual(db.unknown_fields(run_doc()), {})
 
-    def test_the_reported_probe_names_web_link(self):
-        got = db.unknown_fields(run_doc(web_link="https://example.com/owa?ItemID=PROBE"))
-        self.assertIn("web_link (message)", got)
+    def test_something_the_schema_does_not_have_is_named(self):
+        """`web_link` was the reported example and is now an accepted field - which is why
+        this uses a key that genuinely is not. A test whose fixture quietly becomes valid
+        stops testing anything, and reports a pass either way."""
+        got = db.unknown_fields(run_doc(thread_id="AAQkAD..."))
+        self.assertIn("thread_id (message)", got)
+
+    def test_the_fields_added_for_connector_installs_are_accepted(self):
+        """The other half of the same contract: these must NOT be reported as unknown, or
+        the seam tells connector authors their data was dropped when it was stored."""
+        self.assertEqual(db.unknown_fields(run_doc(
+            web_link="https://example.com/owa?ItemID=PROBE",
+            body_text="Hello.")), {})
 
     def test_a_typo_is_named_rather_than_swallowed(self):
         """The sharper everyday case: it ingests cleanly and the row is unopenable."""
@@ -51,8 +61,8 @@ class UnknownFieldsAreNamed(unittest.TestCase):
 
     def test_it_counts_occurrences_not_just_names(self):
         doc = {"run_date": "2020-01-01",
-               "messages": [dict(GOOD, web_link="x") for _ in range(4)]}
-        self.assertEqual(db.unknown_fields(doc)["web_link (message)"], 4)
+               "messages": [dict(GOOD, thread_id="x") for _ in range(4)]}
+        self.assertEqual(db.unknown_fields(doc)["thread_id (message)"], 4)
 
     def test_unknown_keys_at_every_level_are_found(self):
         doc = run_doc()
@@ -107,17 +117,17 @@ class StrictRefuses(unittest.TestCase):
             capture_output=True, text=True, env=env)
 
     def test_strict_refuses_an_unrecognised_key(self):
-        r = self.ingest(run_doc(web_link="https://example.com"), "--strict")
+        r = self.ingest(run_doc(thread_id="AAQkAD..."), "--strict")
         self.assertEqual(r.returncode, 2, r.stderr[-400:])
-        self.assertIn("web_link", r.stderr)
+        self.assertIn("thread_id", r.stderr)
 
     def test_without_strict_it_succeeds_and_still_names_it(self):
         """Forward compatibility: a caller on a newer contract than the installed version
         must still succeed. Naming what was dropped costs nothing."""
-        r = self.ingest(run_doc(web_link="https://example.com"))
+        r = self.ingest(run_doc(thread_id="AAQkAD..."))
         self.assertEqual(r.returncode, 0, r.stderr[-400:])
-        self.assertIn("web_link", r.stderr)
-        self.assertIn("web_link (message)", json.loads(r.stdout)["ignored_keys"])
+        self.assertIn("thread_id", r.stderr)
+        self.assertIn("thread_id (message)", json.loads(r.stdout)["ignored_keys"])
 
     def test_the_redirect_is_real_and_the_live_store_is_untouched(self):
         """The control that makes every test in this class safe to run."""

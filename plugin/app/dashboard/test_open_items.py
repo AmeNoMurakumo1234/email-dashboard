@@ -153,5 +153,102 @@ class ResolvingElsewhere(unittest.TestCase):
         self.assertFalse(r["ok"])
 
 
+
+class AnExitThatIsNotCompletion(unittest.TestCase):
+    """A list whose only way out is "done" becomes a graveyard.
+
+    Reported from a live install: an item nearly two hundred days old - a software-seat
+    offer nobody was ever going to take - with no exit that was not a lie. Items like that
+    are what teach a reader to skim past the one live item.
+    """
+
+    def setUp(self):
+        self.s = Store()
+        self.s.ingest([msg(message_id="<a@x>")], "2026-08-01")
+
+    def resolve(self, **kw):
+        return server.api_resolve(self.s.conn, {}, dict({"key": "<a@x>"}, **kw))
+
+    def test_deciding_not_to_do_it_closes_the_item(self):
+        r = self.resolve(where="declined", note="not taking the offer")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.s.items()["open"], 0)
+        self.assertEqual(self.s.items("all")["items"][0]["resolved_where"], "declined")
+
+    def test_an_expired_thing_closes_too(self):
+        self.assertTrue(self.resolve(where="expired")["ok"])
+        self.assertEqual(self.s.items()["open"], 0)
+
+    def test_the_old_spelling_still_works(self):
+        """Existing rows and any script written against the previous release."""
+        r = self.resolve(where="moot")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["where"], "declined")
+
+    def test_an_invented_outcome_is_still_refused(self):
+        """The control: widening the vocabulary must not mean accepting anything."""
+        self.assertFalse(self.resolve(where="whatever")["ok"])
+        self.assertEqual(self.s.items()["open"], 1)
+
+    def test_the_offered_outcomes_are_reported_to_the_client(self):
+        """So the UI cannot drift from what the server accepts - the two-spellings trap."""
+        self.assertEqual(tuple(self.s.items()["resolutions"]), server.RESOLUTIONS)
+
+
+class WhatTheListSaysAboutItself(unittest.TestCase):
+
+    def setUp(self):
+        self.s = Store()
+
+    def test_median_age_not_just_length(self):
+        """A list whose median age climbs is being ignored however short it is."""
+        for i, day in enumerate(("2026-07-01", "2026-07-20", "2026-08-01")):
+            self.s.ingest([msg(message_id="<%d@x>" % i, msg_date=day)], day)
+        out = self.s.items()
+        self.assertEqual(out["open"], 3)
+        self.assertGreater(out["oldest_days"], out["median_days"],
+                           "oldest and median must be different numbers, or one of them "
+                           "is not being computed")
+        self.assertGreater(out["median_days"], 0)
+
+    def test_it_groups_by_who_is_waiting(self):
+        """Four asks from one colleague is one conversation; four from four people is
+        four. The owner acts by person, so the panel has to say who."""
+        self.s.ingest([msg(message_id="<a@x>", sender="Boss <boss@example.com>"),
+                       msg(message_id="<b@x>", sender="Boss <boss@example.com>"),
+                       msg(message_id="<c@x>", sender="Other <other@example.com>")],
+                      "2026-08-01")
+        who = {w["who"]: w["items"] for w in self.s.items()["waiting_on_you_from"]}
+        self.assertEqual(sum(who.values()), 3)
+        self.assertEqual(max(who.values()), 2)
+
+    def test_resolved_items_are_not_counted_as_waiting(self):
+        """Asserted through state=all, which is the only view where this can be wrong.
+
+        The first version of this test asked for the open-only list, where the filter is
+        redundant - so it passed against a version that counted everything, and proved
+        nothing. `show resolved` is exactly when a stale "waiting on you" would mislead.
+        """
+        self.s.ingest([msg(message_id="<a@x>", sender="Boss <boss@example.com>"),
+                       msg(message_id="<b@x>", sender="Other <other@example.com>")],
+                      "2026-08-01")
+        server.api_resolve(self.s.conn, {}, {"key": "<a@x>", "where": "declined"})
+        every = self.s.items("all")
+        self.assertEqual(len(every["items"]), 2, "control: both rows are in this view")
+        who = {w["who"] for w in every["waiting_on_you_from"]}
+        self.assertEqual(len(who), 1, "the resolved one must not still be waiting on you")
+        self.assertNotIn("boss", who)
+
+    def test_median_ignores_resolved_items_too(self):
+        self.s.ingest([msg(message_id="<old@x>", msg_date="2026-01-01")], "2026-01-01")
+        self.s.ingest([msg(message_id="<new@x>", msg_date="2026-08-01")], "2026-08-01")
+        before = self.s.items("all")["median_days"]
+        server.api_resolve(self.s.conn, {}, {"key": "<old@x>", "where": "expired"})
+        after = self.s.items("all")["median_days"]
+        self.assertLess(after, before,
+                        "closing the oldest item must move the median, or the number is "
+                        "measuring the archive rather than the backlog")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

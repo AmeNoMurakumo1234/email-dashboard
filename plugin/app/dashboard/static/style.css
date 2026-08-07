@@ -699,3 +699,14 @@ mark { background: rgba(74,168,255,.28); color: var(--text); border-radius: 3px;
 .open-row.done .open-subject { font-weight: 500; text-decoration: line-through; }
 .open-resolved { font-size: 0.85rem; color: var(--muted); }
 .open-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+/* An explicit way OUT of the sandbox, styled so it cannot be mistaken for the safe path. */
+.mv-external {
+  display: inline-block;
+  padding: 4px 10px;
+  border: 1px solid var(--warn, #d98d3d);
+  border-radius: 6px;
+  color: var(--warn, #d98d3d);
+  text-decoration: none;
+  font-weight: 600;
+}

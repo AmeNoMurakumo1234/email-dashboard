@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.10.0 — a connector install can actually read its mail
+
+0.8.0 let an account **declare** that something else fetches it, and `doctor` reported that
+honestly instead of red. But declaring it did not make a single message openable, so on that
+class of install the sandboxed reader, the image blocking and the tracking-host report — the
+headline privacy features — were unreachable for every row.
+
+### Fixed — the viewer no longer says "not found" about something it never searched
+
+Opening a row on a connector account rendered **not found in this mailbox** above a detail
+that correctly explained nothing had gone looking. The headline contradicted its own
+explanation, in the one place the tool has the *most* certainty about what happened —
+`providers.backend_of()` knows the answer before any subprocess is spawned.
+
+It now branches on the backend first and reports **"this account has no local fetcher"**,
+which is the same vocabulary `doctor` already uses. An absence is only reportable by an
+instrument that ran.
+
+### Added — `body_text` and `web_link`
+
+Two new accepted fields, and the same instinct that added recipients: **carry more of what
+the fetcher saw.**
+
+- **`body_text`** — raw MIME, or just the text or HTML body; either is accepted, so the
+  difference is handled by the tool rather than by every connector author. With it the
+  **sandboxed reader works with no fetch at all**, and it goes through the *same*
+  parse-and-sanitise path as a fetched message. A second rendering route would be a second
+  place for image blocking to be subtly different, and the one nobody tests is the one that
+  leaks.
+- **`web_link`** — an explicit *"open in your mail client"* button, labelled as leaving the
+  sandbox, because it does: the provider renders it, images and tracking included. Offered,
+  never used silently. But *opens somewhere* beats *cannot open*.
+
+### Added — two more ways to close an open item
+
+A standing list whose only exit is completion becomes a graveyard, and a graveyard teaches
+its reader to skim past the one live item. Reported from a live install: an item nearly two
+hundred days old — a software-seat offer nobody was ever going to take — with no exit that
+was not a lie.
+
+Alongside **done here** and **done elsewhere**:
+
+- **not doing this** — a decision, which is a real answer and closes the item
+- **expired** — the offer lapsed, the deadline passed, the moment is gone
+
+`moot` still works for anything written against the previous release.
+
+### Added — median age, and who is waiting
+
+`/api/open-items` reports **median age** beside oldest. A list that churns is working however
+long it is; one whose median age climbs every week is being ignored however short. Length
+alone says nothing, and chasing a length target pushes toward hiding things rather than
+closing them.
+
+It also groups by **who is waiting on you**. Four asks from one colleague is one
+conversation; four from four people is four. The owner acts by person.
+
 ## 0.9.0 — things derived once, and the silence around them
 
 Every fix here is the same shape: a value computed at one moment, trusted forever, and

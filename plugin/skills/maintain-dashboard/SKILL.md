@@ -200,9 +200,12 @@ Include the outstanding list in the daily report, **oldest first**, with its age
 the only list on the board that gets worse by being ignored — a three-week-old item nobody
 has touched matters more than today's, which is the reverse of how every other panel ranks.
 
-**Offer the three outcomes, not one.** An item can be done here, done elsewhere, or no
-longer relevant. Most things that arrive by mail are settled on a call or in a chat, and a
-list you have to lie to in order to clear is a list that gets abandoned:
+**Offer all four outcomes, not just "done".** An item can be done here, done elsewhere,
+**declined** (a decision not to do it — which is finishing), or **expired** (the offer
+lapsed, the deadline passed). Most things that arrive by mail are settled on a call or in a
+chat, and a list you have to lie to in order to clear is a list that gets abandoned. A
+standing list whose only exit is completion becomes a graveyard, and a graveyard teaches its
+reader to skim past the one live item:
 
 ```
 curl -s -X POST http://127.0.0.1:9770/api/resolve   -H "Content-Type: application/json" -H "X-Dashboard: 1"   -d '{"key":"<message-id>","where":"off-channel","note":"settled on a call"}'
@@ -211,6 +214,14 @@ curl -s -X POST http://127.0.0.1:9770/api/resolve   -H "Content-Type: applicatio
 **Never resolve an item on the owner's behalf.** Acknowledging is about attention and is
 yours to suggest; resolving is a claim that something was done, and only they know that. An
 item wrongly marked resolved is worse than one left open — the open one is still visible.
+
+**Watch the median age, not the length.** `/api/open-items` reports both. A list that churns
+is working however long it is; one whose median age climbs every week is being ignored
+however short. Length alone tells you nothing, and chasing a length target pushes toward
+hiding things rather than closing them.
+
+**Report it grouped by who is waiting.** Four asks from one colleague is one conversation;
+four from four people is four. `waiting_on_you_from` is in the same payload.
 
 Upgrading an install that has history but no list yet:
 `python dashboard/backfill_open_items.py` shows what a window would open, and writes nothing

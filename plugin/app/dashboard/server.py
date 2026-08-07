@@ -1662,6 +1662,50 @@ def sender_host_profile(conn, sender):
             "hosts": hosts}
 
 
+
+def _backend_for_account(account):
+    """Which backend serves this mailbox, per config - or None if it is not configured.
+
+    Read here rather than inferred, so the viewer and `doctor` cannot disagree about what
+    an account is. Failing to None means "carry on and try", which is the old behaviour and
+    the safe direction: a misread config must not make a working mailbox unreadable.
+    """
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
+        import providers                                            # noqa: PLC0415
+        with open(ACCOUNTS_FILE, encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+        for acct in cfg.get("accounts") or []:
+            if str(acct.get("email", "")).lower() == account.lower():
+                return providers.backend_of(acct)
+    except Exception:
+        return None
+    return None
+
+
+CRLF = "\r\n"
+
+
+def _as_mime_bytes(stored):
+    """A stored body as parseable MIME, whether the connector gave us MIME or plain text.
+
+    Connectors differ: a few can hand over the raw message, most can only give the text or
+    HTML body. Both are accepted, and the difference is resolved HERE rather than being a
+    documented burden on every connector author - a seam only works if it is easy to write
+    against.
+    """
+    text = stored if isinstance(stored, str) else str(stored)
+    head = text.lstrip()[:2000].lower()
+    if head.startswith(("received:", "from:", "message-id:", "mime-version:",
+                        "content-type:", "date:", "subject:", "return-path:")):
+        return text.encode("utf-8", "replace")            # already a whole message
+    looks_html = any(t in head for t in ("<html", "<body", "<div", "<table", "<p>"))
+    return ("MIME-Version: 1.0" + CRLF
+            + "Content-Type: %s; charset=utf-8" % ("text/html" if looks_html
+                                                   else "text/plain")
+            + CRLF + CRLF + text).encode("utf-8", "replace")
+
+
 def api_message(conn, q):
     """Fetch ONE message by Message-ID and return it already made safe.
 
@@ -1689,51 +1733,97 @@ def api_message(conn, q):
     if not mid or not account:
         return {"ok": False, "error": "message_id and account are required"}
 
-    tool = os.path.join(os.path.dirname(HERE), "tools", "mailtool.py")
-    tmp = os.path.join(tempfile.gettempdir(), "mv_%s.eml" % abs(hash(mid + account)))
-    try:
-        # encoding is stated EXPLICITLY: subprocess(text=True) on Windows decodes with
-        # cp1252, so any non-ascii byte in a subject or error line raises UnicodeDecodeError
-        # and the whole request fails for a reason that has nothing to do with the mail.
-        p = subprocess.run(
-            [sys.executable, tool, "find", "--account", account,
-             "--message-id", mid, "--out", tmp],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=60)
-        # TWO OUTCOMES THAT MEAN OPPOSITE THINGS, and they used to share one message.
-        #
-        # "not found in this mailbox" was returned whether the tool searched and found
-        # nothing, or never ran at all - no app registration, no token, bad config, network
-        # down. On an install where the fetcher cannot connect, every row reported the mail
-        # as absent while it sat in the inbox untouched, and the UI added "trashed mail is
-        # recoverable for about 30 days" on top, inviting the reader to conclude it had been
-        # deleted and might be gone. Two false statements about someone's data, in the
-        # reassuring direction, from a lookup that never happened.
-        #
-        # `find` exits 3 for a real miss and something else when it could not get that far,
-        # so the two are distinguishable. `detail` was always captured here and never shown;
-        # on the unreachable path it is the only thing that says what actually went wrong.
-        if p.returncode == 3:
-            return {"ok": False, "reason": "not_found", "searched": True,
-                    "error": "not found in this mailbox",
-                    "detail": (p.stderr or "")[:400]}
-        if p.returncode != 0 or not os.path.exists(tmp):
-            return {"ok": False, "reason": "unreachable", "searched": False,
-                    "error": "could not reach the mailbox - the message may still be there",
-                    "detail": ((p.stderr or "") + (p.stdout or ""))[-600:],
-                    "hint": "run `python tools/mailtool.py doctor` to see why the mail "
-                            "backend is failing. Nothing was searched, so this says "
-                            "nothing about whether the message still exists."}
-        raw = open(tmp, "rb").read()
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "timed out talking to the mail server"}
-    except Exception as e:
-        return {"ok": False, "error": "could not retrieve: %s" % e}
-    finally:
+    # BRANCH ON THE BACKEND BEFORE SPAWNING ANYTHING.
+    #
+    # A connector account is a third case and it used to land in the first branch, so the
+    # viewer rendered "not found in this mailbox" over an explanation that said, correctly,
+    # that nothing here fetches this account. The headline contradicted its own detail -
+    # and "not found" is not a finding when nothing was searched. That is the same
+    # absence-reported-as-fact this endpoint was rewritten to remove, surviving in the one
+    # place the tool has the MOST certainty about what happened, because the answer is
+    # known before any subprocess runs.
+    #
+    # `doctor` already says NOT FETCHED HERE. Same vocabulary here.
+    backend = _backend_for_account(account)
+    if backend == "connector":
+        row = conn.execute(
+            "SELECT web_link, body_text FROM messages WHERE message_id = ? "
+            "AND account = ? ORDER BY id DESC LIMIT 1", (mid, account)).fetchone()
+        stored_body = (row["body_text"] if row else None) or ""
+        # THE SANITISING READER, ON AN INSTALL WITH NO FETCHER. If the connector supplied a
+        # body at ingest there is nothing to fetch: the text-first view, the blocked
+        # images and the tracking-host report are the whole point of this tool and were
+        # unreachable for every row on this class of install. Fed into the SAME
+        # parse-and-sanitise path below rather than a second one - a second rendering route
+        # is a second place for image blocking to be subtly different, and the one nobody
+        # tests is the one that leaks.
+        prefetched = _as_mime_bytes(stored_body) if stored_body.strip() else None
+        if prefetched is None:
+            return {
+                "ok": False,
+                "reason": "no_local_fetcher",
+                "searched": False,
+                "error": "this account has no local fetcher",
+                "detail": ("Declared as fetched elsewhere, so nothing here went looking. "
+                           "That is the configuration working, not a fault - and it says "
+                           "nothing about whether the message exists."),
+                "hint": ("Supply `body_text` at ingest to read messages in the sandboxed "
+                         "viewer, or `web_link` to open them in your mail client."),
+                "web_link": (row["web_link"] if row else None),
+            }
+    else:
+        prefetched = None
+
+    if prefetched is not None:
+        # Nothing spawned, no socket opened, nothing written to disk: the body
+        # was already in the store.
+        raw = prefetched
+    else:
+        tool = os.path.join(os.path.dirname(HERE), "tools", "mailtool.py")
+        tmp = os.path.join(tempfile.gettempdir(), "mv_%s.eml" % abs(hash(mid + account)))
         try:
-            os.remove(tmp)
-        except OSError:
-            pass
+            # encoding is stated EXPLICITLY: subprocess(text=True) on Windows decodes with
+            # cp1252, so any non-ascii byte in a subject or error line raises UnicodeDecodeError
+            # and the whole request fails for a reason that has nothing to do with the mail.
+            p = subprocess.run(
+                [sys.executable, tool, "find", "--account", account,
+                 "--message-id", mid, "--out", tmp],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=60)
+            # TWO OUTCOMES THAT MEAN OPPOSITE THINGS, and they used to share one message.
+            #
+            # "not found in this mailbox" was returned whether the tool searched and found
+            # nothing, or never ran at all - no app registration, no token, bad config, network
+            # down. On an install where the fetcher cannot connect, every row reported the mail
+            # as absent while it sat in the inbox untouched, and the UI added "trashed mail is
+            # recoverable for about 30 days" on top, inviting the reader to conclude it had been
+            # deleted and might be gone. Two false statements about someone's data, in the
+            # reassuring direction, from a lookup that never happened.
+            #
+            # `find` exits 3 for a real miss and something else when it could not get that far,
+            # so the two are distinguishable. `detail` was always captured here and never shown;
+            # on the unreachable path it is the only thing that says what actually went wrong.
+            if p.returncode == 3:
+                return {"ok": False, "reason": "not_found", "searched": True,
+                        "error": "not found in this mailbox",
+                        "detail": (p.stderr or "")[:400]}
+            if p.returncode != 0 or not os.path.exists(tmp):
+                return {"ok": False, "reason": "unreachable", "searched": False,
+                        "error": "could not reach the mailbox - the message may still be there",
+                        "detail": ((p.stderr or "") + (p.stdout or ""))[-600:],
+                        "hint": "run `python tools/mailtool.py doctor` to see why the mail "
+                                "backend is failing. Nothing was searched, so this says "
+                                "nothing about whether the message still exists."}
+            raw = open(tmp, "rb").read()
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "timed out talking to the mail server"}
+        except Exception as e:
+            return {"ok": False, "error": "could not retrieve: %s" % e}
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
     msg = _email.message_from_bytes(raw, policy=_policy.default)
     text_part, html_part, attachments = None, None, []
@@ -1900,6 +1990,9 @@ def api_answer(conn, q, body=None):
     return {"ok": True, "id": qid, "answered": True}
 
 
+RESOLUTIONS = ("email", "off-channel", "declined", "expired")
+
+
 def api_open_items(conn, q):
     """What is still outstanding, oldest first, with how long it has been outstanding.
 
@@ -1922,6 +2015,18 @@ def api_open_items(conn, q):
                                        r.get("resolved_at") or str(today))
         r["stale"] = bool(r["state"] == "open" and (r["days_open"] or 0) >= 14)
     n_open = sum(1 for r in rows if r["state"] == "open")
+    ages = sorted(r["days_open"] for r in rows
+                  if r["state"] == "open" and r["days_open"] is not None)
+    # MEDIAN AGE, NOT LENGTH. A list whose median age climbs every week is being ignored
+    # however short it is; one that churns is working however long it is. Length alone says
+    # nothing, and a length target would push toward hiding things rather than closing them.
+    median = ages[len(ages) // 2] if ages else 0
+
+    # GROUPED BY WHO IS WAITING, because that is how the work actually gets done. Four asks
+    # from one colleague is one conversation; four asks from four people is four.
+    who = collections.Counter(
+        _sender_key(r["sender"]) or (r["sender"] or "?")
+        for r in rows if r["state"] == "open")
     return {
         "items": rows,
         "open": n_open,
@@ -1933,6 +2038,9 @@ def api_open_items(conn, q):
                                     if r.get("resolved_where") == "off-channel"),
         "oldest_days": max([r["days_open"] or 0 for r in rows if r["state"] == "open"],
                            default=0),
+        "median_days": median,
+        "waiting_on_you_from": [{"who": k, "items": n} for k, n in who.most_common(8)],
+        "resolutions": list(RESOLUTIONS),
         "state": state,
     }
 
@@ -1970,11 +2078,26 @@ def api_resolve(conn, q, body=None):
         conn.commit()
         return {"ok": True, "key": key, "state": "open"}
     where = (body.get("where") or "off-channel").strip().lower()
-    if where not in ("email", "off-channel", "moot"):
+    # FOUR OUTCOMES, because three of them are not "done".
+    #
+    # A standing list whose only exit is completion becomes a graveyard, and a graveyard
+    # teaches its reader to skim past the one live item. Reported from a live install: an
+    # item nearly two hundred days old - a software-seat offer nobody was ever going to
+    # take - with no way out that was not a lie.
+    #
+    #   email       finished here, in the mail
+    #   off-channel finished somewhere this tool cannot see: a call, a chat, a corridor
+    #   declined    a decision NOT to do it, which is a real answer and closes the item
+    #   expired     the offer lapsed, the deadline passed, the moment is gone
+    #
+    # `moot` is the old spelling of `declined` and is still accepted so existing rows and
+    # scripts keep working; it is not offered.
+    if where == "moot":
+        where = "declined"
+    if where not in RESOLUTIONS:
         return {"ok": False,
-                "error": "where must be 'email', 'off-channel' or 'moot' (no longer "
-                         "relevant) - an unrecorded reason is how a resolved list stops "
-                         "meaning anything"}
+                "error": "where must be one of %s - an unrecorded reason is how a "
+                         "resolved list stops meaning anything" % ", ".join(RESOLUTIONS)}
     conn.execute(
         "UPDATE open_items SET state = 'resolved', resolved_at = ?, resolved_where = ?, "
         "resolved_note = ? WHERE key = ?",
