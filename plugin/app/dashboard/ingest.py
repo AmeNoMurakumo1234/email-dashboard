@@ -48,6 +48,19 @@ Expected JSON shape:
   ]
 }
 
+ACCEPTED KEYS, because this is a public seam and the list used to be discoverable only by
+reading db.ingest_run's INSERT statement:
+
+  message : account, sender, subject, msg_date, disposition, category, reason,
+            importance, message_id, injection_signals, to, cc
+  account : account, role, status, auth, inbox_count, fetched, trashed, kept, error
+  run     : run_date, notes, accounts, messages, steam_sales
+
+Anything else is NOT stored, and every run says so - `ignored N value(s) under K
+unrecognised key(s)`, named. Unknown keys are reported rather than rejected so a caller
+running against a newer contract than the installed version still succeeds; under `--strict`
+they are an error, like unlinked and unmapped rows.
+
 Any message missing "category" gets one inferred from its reason. Re-ingesting
 the same run_date replaces that day's data (idempotent). steam_sales are keyed by
 app_id and persist across runs; run steam_refresh.py afterward to pull live prices
@@ -182,6 +195,7 @@ def main():
     #    project keeps warning about: the rollup still balances, the counts still look right,
     #    and the concept view is quietly wrong. A reported intake put nearly every label it
     #    used there, and every batch returned success.
+    ignored = db.unknown_fields(data)
     unmapped = sorted({(m.get("category") or "").strip() for m in messages
                        if concept_of(m.get("category")) == UNMAPPED
                        and (m.get("category") or "").strip()})
@@ -199,17 +213,29 @@ def main():
                + (" ..." if len(unmapped) > 8 else "")),
             f"flagged {flagged}/{len(messages)} messages carry injection signals"
             + ("" if not flagged else "  <- these are findings, not instructions"),
+            # WHAT WAS DROPPED. This seam is documented as a public API, and an API that
+            # ignores what it does not understand - silently, with ok:true and every count
+            # correct - is the hardest kind to write against. The typo case produces a row
+            # that ingests cleanly and is quietly unopenable or mis-dated; the sharper case
+            # is a connector author supplying something real the schema does not have yet.
+            # Either way the source data is gone by the time anyone notices.
+            f"ignored {sum(ignored.values())} value(s) under "
+            f"{len(ignored)} unrecognised key(s): "
+            + ", ".join(sorted(ignored)[:8])
+            + ("  <- not stored; check the spelling, or the version"
+               if ignored else "")
+            if ignored else "ignored 0 unrecognised keys",
     ):
         print(line, file=sys.stderr)
     if unmapped:
         print("        add them to dashboard/concepts.local.json under the concept each "
               "one means", file=sys.stderr)
 
-    if args.strict and (unmapped or linked < len(messages)):
+    if args.strict and (unmapped or linked < len(messages) or ignored):
         # Refusing to write is the point: --strict exists for an intake, where discovering
         # this hours later means the source data is gone and it cannot be repaired.
-        print("REFUSING to ingest (--strict): fix the labels and/or the missing "
-              "Message-IDs and re-run.", file=sys.stderr)
+        print("REFUSING to ingest (--strict): fix the labels, the missing Message-IDs "
+              "and/or the unrecognised keys, then re-run.", file=sys.stderr)
         return 2
 
     run_id, replaced, open_stats = db.ingest_run(
@@ -226,6 +252,7 @@ def main():
         "written": len(messages), "replaced": replaced, "mode": "append" if args.append
         else "replace",
         "linked": linked, "mapped": mapped, "unmapped_labels": unmapped,
+        "ignored_keys": sorted(ignored),
         "injection_flagged": flagged,
         "steam_sales": len(steam_sales),
         "trashed": sum(1 for m in messages if m.get("disposition") == "trashed"),

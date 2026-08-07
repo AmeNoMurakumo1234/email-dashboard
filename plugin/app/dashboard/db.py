@@ -12,11 +12,19 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from datetime import datetime, timezone
 
-from concepts import concept_of
+from concepts import concept_of, fingerprint as concept_fingerprint
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "email_dashboard.db")
+# EMAIL_DASHBOARD_DB names the store, so a caller can redirect one WITHOUT editing this
+# file. Added because a test set that variable, nothing read it, and three subprocess runs
+# wrote their fixtures straight into the owner's live database - the second time this suite
+# has damaged real data by assuming a redirect that did not exist. A knob that is documented
+# and ignored is worse than no knob.
+DB_PATH = (os.environ.get("EMAIL_DASHBOARD_DB")
+           or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "email_dashboard.db"))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -300,6 +308,7 @@ def init_db(conn=None):
             conn.execute("ALTER TABLE messages ADD COLUMN msg_day TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_day ON messages(msg_day)")
         _backfill_msg_day(conn)
+        _reconcile_concepts(conn)
 
         # The injection label has to OUTLIVE ingest. Computed and then discarded, it was
         # invisible to the dashboard, so the one place a person would notice "this mail
@@ -335,6 +344,76 @@ def init_db(conn=None):
         conn.commit()
     finally:
         conn.close()
+
+
+
+# A tiny key/value table for facts ABOUT the store rather than in it. Currently one fact:
+# which version of the concept map the `concept` column was derived with.
+_META_DDL = ("CREATE TABLE IF NOT EXISTS store_meta ("
+             "key TEXT PRIMARY KEY, value TEXT)")
+
+
+def _reconcile_concepts(conn):
+    """Re-derive `concept` whenever the map it was derived FROM has changed. Idempotent.
+
+    THE DEFECT THIS CLOSES: on a real install, almost every row still read `unmapped` long
+    after the owner had written a local map covering every label in use - while
+    `test_concepts.py` reported ALL PASS, because that test resolves live through
+    `concept_of()` and the dashboard reads the stored column. Two instruments, opposite
+    answers, and the one the user sees is the stale one.
+
+    `concept` is resolved once at ingest and frozen. The map it resolves against is edited
+    later BY DESIGN - the shipped map is deliberately generic and the onboarding skill tells
+    people to add their own labels as they meet them. So the column does not drift by
+    accident; it drifts as a direct consequence of using the tool as documented.
+
+    What it broke was not only the concept view. `questions.py` decides what is unmapped
+    from this column, so it raised a question naming labels that resolved perfectly well -
+    and CROWDED OUT real ones, emitting a fraction of the questions it should have. A stale
+    derived value did not merely display wrong; it degraded what the tool asked its owner,
+    which is the feature the previous release exists to add.
+
+    `msg_day` already had exactly this treatment; `concept` did not. The general rule is
+    now written down: any value derived at write time from configuration the owner is
+    invited to edit WILL drift, and the drift is invisible because every count still
+    balances. The map fingerprint is recorded in `store_meta` for diagnosis - which version
+    of the map the store was last reconciled against - but nothing is gated on it.
+    """
+    try:
+        conn.execute(_META_DDL)
+        # NO FINGERPRINT GATE. There was one, and it was wrong in a way worth recording:
+        # add a label, run, remove the label, run again, and the fingerprint returns to its
+        # earlier value - so the sweep is skipped and the rows written in between keep
+        # asserting a mapping the owner has since withdrawn. An optimisation that
+        # reintroduces the exact staleness it was added to fix is not an optimisation.
+        #
+        # The scan below is over DISTINCT (category, concept) - dozens of rows, not
+        # thousands - so gating it saved almost nothing and could be fooled. Comparing
+        # against the live map every time cannot be.
+        changed = 0
+        for r in conn.execute("SELECT DISTINCT category, concept FROM messages "
+                              "WHERE COALESCE(category,'') != ''").fetchall():
+            category, stored = r[0], r[1]
+            live = concept_of(category)
+            if stored == live:
+                continue
+            cur = conn.execute(
+                "UPDATE messages SET concept = ? WHERE category = ? AND concept IS ?",
+                (live, category, stored))
+            changed += cur.rowcount
+        conn.execute("INSERT INTO store_meta (key, value) VALUES ('concept_map', ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                     (concept_fingerprint(),))
+        conn.commit()
+        if changed:
+            # Said out loud. A silent repair of a whole store is indistinguishable from no
+            # repair, and the owner has no way to learn their concept view had been wrong.
+            print("concepts: re-derived %d row(s) after a change to the concept map"
+                  % changed, file=sys.stderr)
+        return changed
+    except sqlite3.Error as exc:
+        print("concepts: could not reconcile (%s)" % exc, file=sys.stderr)
+        return 0
 
 
 def _backfill_msg_day(conn):
@@ -653,6 +732,58 @@ def carry_open_items(conn, messages, run_date):
             seen += 1
     return opened, seen
 
+
+
+# THE PUBLIC INPUT CONTRACT, kept beside the INSERT that consumes it.
+#
+# `ingest.py` is documented as the supported entry point from any source, which makes this
+# list an API. It used to be discoverable only by reading the INSERT statement below, and
+# anything not in it was dropped on the floor with `ok: true` and every count correct - so a
+# connector author supplying `web_link`, or anyone who typed `messageId` instead of
+# `message_id`, got silence and assumed it landed. The source data is gone by the time
+# anyone notices.
+#
+# Defined here rather than in ingest.py because this is where the fields are actually
+# consumed; a contract that lives away from its implementation is one that drifts.
+MESSAGE_FIELDS = frozenset((
+    "account", "sender", "subject", "msg_date", "disposition", "category", "reason",
+    "importance", "message_id", "injection_signals", "to", "cc",
+))
+
+RUN_FIELDS = frozenset(("run_date", "notes", "accounts", "messages", "steam_sales"))
+
+ACCOUNT_FIELDS = frozenset((
+    "account", "role", "status", "auth", "inbox_count", "fetched", "trashed", "kept",
+    "error",
+))
+
+
+def unknown_fields(data):
+    """Every key the store will not read, with how many times it appeared.
+
+    Reported rather than rejected. Forward compatibility matters - a caller running against
+    a newer contract than the installed version should still succeed - but naming what was
+    dropped costs nothing, and it is the same move already made for `linked N/M` and
+    `mapped N/M`.
+    """
+    out = {}
+
+    def note(key, where):
+        out.setdefault("%s (%s)" % (key, where), 0)
+        out["%s (%s)" % (key, where)] += 1
+
+    for k in (data or {}):
+        if k not in RUN_FIELDS:
+            note(k, "run")
+    for a in (data or {}).get("accounts") or []:
+        for k in a:
+            if k not in ACCOUNT_FIELDS:
+                note(k, "account")
+    for m in (data or {}).get("messages") or []:
+        for k in m:
+            if k not in MESSAGE_FIELDS:
+                note(k, "message")
+    return out
 
 def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=None,
                append=False):

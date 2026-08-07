@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.9.0 — things derived once, and the silence around them
+
+Every fix here is the same shape: a value computed at one moment, trusted forever, and
+nothing saying it had gone stale. All four were invisible — correct counts, `ok: true`, and
+a wrong answer on screen.
+
+### Fixed — an acknowledgement no longer evaporates when its row is linked
+
+`ack_key` returned the Message-ID when a row had one and a `row:` identity when it did not.
+Both correct, and **computed from row state that changes.** The moment a linking pass gave a
+row its Message-ID, every acknowledgement stored under the old key stopped matching.
+
+Reported from a live install: dozens of items acknowledged, a linking pass minutes later,
+and every one of them rendered as unacknowledged again. The table still held them. The API
+still returned them. Only the rendering was wrong, and it was noticed only because the dots
+changed colour.
+
+An acknowledgement is the one thing in this store that is **the owner's own judgment** rather
+than the agent's inference — everything else can be recomputed from the mailbox. Losing it
+silently is the highest-cost failure available here.
+
+Matching is now on the **set of identities** a row is known by, expanded from both ends: each
+stored ack contributes its key *and* the identity derivable from the account, sender and
+subject it recorded. So it survives a row gaining a Message-ID **and** losing one (a re-ingest
+from a source that does not carry them). **No migration is needed** — orphaned acks start
+matching again on upgrade, with nothing guessed and nothing rewritten.
+
+Un-acknowledging lifts every identity too. Deleting only the preferred key left a legacy ack
+in place, so the row stayed acknowledged: click undo, get `ok`, nothing changes.
+
+### Fixed — the stored `concept` no longer drifts away from the map
+
+`concept` is resolved once at ingest and frozen. The map it resolves against is **edited later
+by design** — the shipped map is generic and the onboarding skill tells you to add your own
+labels as you meet them. Nothing re-derived it, so it drifted as a direct consequence of using
+the tool as documented.
+
+On a real install almost every row still read `unmapped` long after a full local map had been
+written, while `test_concepts.py` reported ALL PASS — that test resolves live, the dashboard
+reads the column. Two instruments, opposite answers, and the one the user sees is the stale
+one.
+
+It is now reconciled on every `init_db`, and says how many rows it repaired. There is
+deliberately **no fingerprint gate**: the first version skipped the sweep when the map hash
+matched, which meant add-a-label, run, remove-it, run left the rows in between asserting a
+mapping the owner had withdrawn — an optimisation that reintroduced the exact staleness it
+was added to prevent.
+
+### Fixed — the question generator was being starved
+
+Three separate problems, all of which made it ask less and worse:
+
+- **`surfaced` was counted as `kept`.** The volume question is suppressed by "has anything
+  ever been kept?", so on any install whose routine *surfaces* rather than bins, the single
+  largest lever on the inbox could never be raised at all. Invisible from a mailbox that
+  trashes. Evidence now reports `surfaced_to_you` and `auto_binned` apart, because "put in
+  front of you and ignored" is a stronger fact than "binned automatically and ignored".
+- **The escalation question made you introspect** — *"family, your employer, your bank"* —
+  asked of a work mailbox whose real answer was colleagues and an accountant, while the tool
+  was already holding the list of senders whose mail had been flagged before. It now offers
+  that list as a multi-select. Recognition is faster and more accurate than recall.
+- **The most dangerous question did not exist.** `assigned_work_at_risk`: messages under a
+  category that is mostly binned, where a *person* named you — a mention, a review request,
+  an assignment. Mechanically derivable now that recipients are stored, and being wrong about
+  it loses work rather than adding noise.
+
+### Added — stakes outrank weight
+
+`STAKES` (`data-loss` → `safety` → `attention` → `noise`) is a hard floor above the weights,
+and weight is now only meaningful **within** a band. A thinly-evidenced question about a rule
+that would bin assigned work outranks the strongest-evidenced question about a pile of
+promos, however large the pile.
+
+Because that signal takes the top of the list by design, a false positive there is expensive:
+the first thing it surfaced on a real mailbox was a marketing blast headed *"[Action Required]
+Looks like you have been ghosting us!"*. Urgency phrases that bulk senders write now need
+corroboration — the message was addressed to you directly, or the recipient list carries a
+mention marker. Phrases only true of one recipient ("assigned you", "mentioned you") still
+stand alone.
+
+### Added — `ingest.py` names what it dropped
+
+The supported public seam accepted unknown keys silently, with `ok: true` and every count
+correct. A typo (`messageId`) produced a row that ingested cleanly and was quietly unopenable;
+a connector author supplying something real the schema lacks got nothing back at all.
+
+Every run now reports `ignored N value(s) under K unrecognised key(s)`, named — the same move
+already made for `linked N/M` and `mapped N/M`. Reported rather than rejected, so a caller on
+a newer contract than the installed version still succeeds; under `--strict` it is an error,
+consistent with unlinked and unmapped rows. **The accepted field list is now documented** in
+the docstring beside the shape example, and lives next to the code that consumes it.
+
+### Added — `EMAIL_DASHBOARD_DB`
+
+Names the store, so a caller can redirect one without editing `db.py`.
+
 ## 0.8.0 — reach
 
 Three gaps that all had the same shape: the tool could only see the one path it was built

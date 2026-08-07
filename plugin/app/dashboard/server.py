@@ -335,19 +335,82 @@ def ack_key(kind, message_id=None, sender=None, subject=None, account=None):
     return "%s|%s" % ((account or "").strip().lower(), subject_shape(subject))
 
 
+def ack_identities(kind, message_id=None, sender=None, subject=None, account=None):
+    """EVERY key this row could be acknowledged under, not just the preferred one.
+
+    THE BUG THIS EXISTS TO KILL, and it is the worst kind this store can have. `ack_key`
+    returns the Message-ID when the row has one and a `row:` identity when it does not -
+    both correct. But the answer is computed from row state THAT CHANGES. The moment a
+    linking pass gives a row its Message-ID, the key derived for it changes, and every
+    acknowledgement stored under the old `row:` key stops matching.
+
+    Reported from a live install: 35 items acknowledged in eleven minutes, a linking pass
+    minutes later, and every one of them rendered as unacknowledged again. The acks table
+    still held all 35. The API still returned all 35. Only the rendering was wrong, and the
+    owner noticed only because the dots changed colour.
+
+    An acknowledgement is the one thing in this store that is unambiguously the OWNER'S OWN
+    JUDGMENT rather than the agent's inference. Everything else can be recomputed from the
+    mailbox; this cannot. Losing it silently is the highest-cost failure available here.
+
+    Matching on the SET rather than re-deriving one key also means no migration is needed:
+    the acks that were orphaned start matching again the moment this ships, with nothing
+    guessed and nothing rewritten. Re-keying them would have had to resolve rows that share
+    sender, subject and account - and guessing there would trade a visible bug for an
+    invisible one.
+
+    The cost, stated because it is real: the `row:` identity is not unique. Two rows with
+    the same account, sender and subject share it, so acknowledging one shows both as
+    acknowledged. That was already true before linking; this makes it true afterwards too,
+    which is the consistent answer rather than a new hazard.
+    """
+    if kind != "message":
+        return (ack_key(kind, message_id, sender, subject, account),)
+    row_key = "row:%s|%s|%s" % (
+        (account or "").strip().lower(), _sender_key(sender) or "",
+        " ".join((subject or "").split()).lower())
+    mid = (message_id or "").strip()
+    # Preferred identity first: it is what a NEW acknowledgement is stored under.
+    return (mid, row_key) if mid else (row_key,)
+
+
+def acked_message_keys(conn):
+    """Every identity under which SOMETHING is acknowledged, expanded from both ends.
+
+    An identity set on the row alone is not enough, because the change runs both ways. A
+    row that GAINS a Message-ID is the reported case; a row that LOSES one - re-ingested
+    from a source that does not carry them, which is every connector install - is the same
+    bug reflected, and the row cannot help there because it no longer knows the Message-ID
+    the ack was stored under.
+
+    The acks table does know: it stores account, sender and subject beside every key. So
+    each stored ack contributes its key AND the `row:` identity derivable from what it
+    recorded, and matching succeeds whichever direction the row moved.
+    """
+    keys = set()
+    for r in conn.execute("SELECT key, account, sender, subject FROM acks "
+                          "WHERE kind = 'message'"):
+        keys.add(r["key"])
+        derived = ack_key("message", None, r["sender"], r["subject"], r["account"])
+        # An EMPTY row identity would match every subject-less, sender-less row in the
+        # store - one stored ack silencing an unbounded set. Same guard the write uses.
+        if derived not in ("row:||", "row:|", ""):
+            keys.add(derived)
+    return keys
+
+
 def annotate_acks(conn, msgs):
     """Attach the ack keys and current state to each row, so the client never guesses."""
-    acked_msg = {r["key"] for r in conn.execute(
-        "SELECT key FROM acks WHERE kind = 'message'")}
+    acked_msg = acked_message_keys(conn)
     acked_thread = {r["key"] for r in conn.execute(
         "SELECT key FROM acks WHERE kind = 'thread'")}
     for m in msgs:
-        km = ack_key("message", m.get("message_id"), m.get("sender"), m.get("subject"),
-                     m.get("account"))
+        ids = ack_identities("message", m.get("message_id"), m.get("sender"),
+                             m.get("subject"), m.get("account"))
         kt = ack_key("thread", None, m.get("sender"), m.get("subject"),
                      m.get("account"))
-        m["ack_key_message"], m["ack_key_thread"] = km, kt
-        m["acked"] = bool(km in acked_msg or kt in acked_thread)
+        m["ack_key_message"], m["ack_key_thread"] = ids[0], kt
+        m["acked"] = bool(any(i in acked_msg for i in ids) or kt in acked_thread)
     return msgs
 
 
@@ -443,9 +506,20 @@ def api_ack(conn, q, body=None):
     if not key or key in ("|", "row:||") or (kind == "thread" and key.endswith("|")):
         return {"ok": False, "error": "nothing identifiable to acknowledge"}
     if body.get("on") is False:
-        conn.execute("DELETE FROM acks WHERE kind = ? AND key = ?", (kind, key))
+        # LIFTED BY EVERY IDENTITY, not just the preferred one - the mirror of the bug that
+        # `ack_identities` exists to fix, and the more infuriating half. Deleting only the
+        # Message-ID key would leave a legacy `row:` ack in place, so the row would still
+        # render acknowledged: the owner clicks to undo, the API answers ok, and nothing
+        # changes. A write that reports success and does nothing is worse than one that
+        # fails, because there is no second attempt.
+        ids = ack_identities(kind, body.get("message_id"), body.get("sender"),
+                             body.get("subject"), body.get("account"))
+        cur = conn.execute(
+            "DELETE FROM acks WHERE kind = ? AND key IN (%s)" % ",".join("?" * len(ids)),
+            (kind,) + tuple(ids))
         conn.commit()
-        return {"ok": True, "kind": kind, "key": key, "acked": False}
+        return {"ok": True, "kind": kind, "key": key, "acked": False,
+                "lifted": cur.rowcount}
     conn.execute(
         "INSERT INTO acks (kind, key, account, sender, subject, note, acked_at) "
         "VALUES (?,?,?,?,?,?,?) ON CONFLICT(kind, key) DO UPDATE SET "
@@ -1290,8 +1364,7 @@ def api_calendar(conn, q):
     # them, so days whose sole notable item was a SECURITY notice or a FINANCIAL one did not
     # ring at all. Match the whole attention set, not the two that came to mind.
     ATTENTION = ("action-needed", "family", "security", "financial")
-    acked_msg = {r["key"] for r in conn.execute(
-        "SELECT key FROM acks WHERE kind = 'message'")}
+    acked_msg = acked_message_keys(conn)
     acked_thread = {r["key"] for r in conn.execute(
         "SELECT key FROM acks WHERE kind = 'thread'")}
     act, open_act = collections.Counter(), collections.Counter()
@@ -1301,8 +1374,9 @@ def api_calendar(conn, q):
         act[r["day"]] += 1
         # Acknowledged counts as handled at either scope - a thread ack covers this run's
         # instance of a recurring notice just as a message ack covers the single email.
-        done = (ack_key("message", r["message_id"], r["sender"], r["subject"],
-                        r["account"]) in acked_msg
+        done = (any(k in acked_msg for k in
+                    ack_identities("message", r["message_id"], r["sender"], r["subject"],
+                                   r["account"]))
                 or ack_key("thread", None, r["sender"], r["subject"],
                            r["account"] if "account" in r.keys() else None)
                 in acked_thread)

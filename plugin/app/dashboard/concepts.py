@@ -198,3 +198,15 @@ def all_concepts():
 
 def known_labels():
     return set(_LABEL_TO_CONCEPT)
+
+def fingerprint():
+    """A stable hash of the MAPPING this module resolves with, local additions included.
+
+    Content, not mtime. Touching concepts.local.json, reformatting it, or adding a comment
+    must not trigger a re-derivation of the whole store; changing what a label resolves TO
+    must. mtime cannot tell those apart and would do both.
+    """
+    import hashlib                                                 # noqa: PLC0415
+    canon = "\n".join("%s=%s" % (lab, con)
+                       for lab, con in sorted(_LABEL_TO_CONCEPT.items()))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]

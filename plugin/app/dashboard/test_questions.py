@@ -35,12 +35,12 @@ def store(rows, acks=(), ):
         conn.execute(
             "INSERT INTO messages (run_id, run_date, account, sender, subject, msg_day, "
             "disposition, category, concept, importance, addressed_directly, "
-            "recipient_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "recipient_count, recipients) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (rid, "2026-08-01", r.get("account", "owner@example.com"), r["sender"],
              r.get("subject", "subject"), r.get("day", "2026-08-01"),
              r.get("disposition", "trashed"), r.get("category", "promo"),
              r.get("concept", "promotions"), r.get("importance", ""),
-             r.get("direct"), r.get("rcount")))
+             r.get("direct"), r.get("rcount"), r.get("recipients")))
     for a in acks:
         conn.execute("INSERT INTO acks (kind, key, sender, acked_at) VALUES (?,?,?,?)",
                      ("message", a[1], a[0], "2026-08-01"))
@@ -272,3 +272,170 @@ class AnswerEndpoint(unittest.TestCase):
         self.assertNotIn("/api/answer", self.server.API)
         self.assertIn("/api/questions", self.server.API)
         self.assertNotIn("/api/questions", self.server.WRITE_API)
+
+
+class TheStarvationBug(unittest.TestCase):
+    """A sender the triage merely SURFACES must still be askable about.
+
+    `surfaced` was counted as `kept`, and the volume question is suppressed by "has anything
+    ever been kept?". So on any install whose routine surfaces rather than bins, the single
+    largest lever on the inbox could never be raised. Invisible from a mailbox that trashes,
+    which is why it took a field report on an install where one sender was a third of the
+    mail.
+    """
+
+    def test_a_surfaced_and_ignored_sender_still_produces_the_question(self):
+        got, items, _ = kinds(store(bulk(30, disposition="surfaced")))
+        self.assertIn("sender_disposition", got)
+        q = [i for i in items if i["kind"] == "sender_disposition"][0]
+        self.assertEqual(q["evidence"]["surfaced_to_you"], 30)
+        self.assertEqual(q["evidence"]["auto_binned"], 0)
+
+    def test_surfaced_and_binned_are_reported_apart(self):
+        """'30 were put in front of you and none mattered' is a stronger fact than '30 were
+        binned automatically and none mattered'. One number cannot say both."""
+        rows = bulk(20, disposition="surfaced") + bulk(10, disposition="trashed")
+        _, items, _ = kinds(store(rows))
+        q = [i for i in items if i["kind"] == "sender_disposition"][0]
+        self.assertEqual(q["evidence"]["surfaced_to_you"], 20)
+        self.assertEqual(q["evidence"]["auto_binned"], 10)
+
+    def test_an_actually_kept_sender_is_still_suppressed(self):
+        """The control. If nothing suppressed it, the question would fire on senders that
+        demonstrably matter."""
+        rows = bulk(29, disposition="surfaced") + bulk(1, disposition="kept")
+        self.assertNotIn("sender_disposition", kinds(store(rows))[0])
+
+
+class StakesOutrankWeight(unittest.TestCase):
+
+    def test_a_data_loss_question_beats_a_pile_of_noise_questions(self):
+        rows = (bulk(40, disposition="surfaced")
+                + [dict(sender="Tracker <t@example.com>", category="bot-issue",
+                        disposition="trashed", subject="Alice assigned you a task",
+                        recipients="mention@noreply.example.com")] * 6)
+        got, items, _ = kinds(store(rows))
+        self.assertIn("assigned_work_at_risk", got)
+        self.assertEqual(got[0], "assigned_work_at_risk",
+                         "a rule that would bin assigned work outranks everything")
+        self.assertEqual(items[0]["stakes"], "data-loss")
+
+    def test_every_question_declares_its_stakes(self):
+        rows = (bulk(20) + bulk(14, category="odd", concept="unmapped")
+                + bulk(6, direct=1, subject="please review this"))
+        _, items, _ = kinds(store(rows))
+        self.assertTrue(items)
+        for q in items:
+            self.assertIn(q["stakes"], questions.STAKES, q["id"])
+
+
+class AssignedWorkAtRisk(unittest.TestCase):
+
+    def rows(self, disposition="trashed", **kw):
+        base = dict(sender="Tracker <t@example.com>", category="bot-issue",
+                    disposition=disposition, subject="a build ran")
+        base.update(kw)
+        return [base] * 6
+
+    def test_a_mention_in_the_recipient_list_is_found(self):
+        """The evidence that only exists because recipients are stored."""
+        got, items, _ = kinds(store(self.rows(recipients="mention@noreply.example.com")))
+        self.assertIn("assigned_work_at_risk", got)
+        q = [i for i in items if i["kind"] == "assigned_work_at_risk"][0]
+        self.assertEqual(q["evidence"]["of_those_binned"], 6)
+
+    def test_an_assignment_in_the_subject_is_found_without_recipients(self):
+        """Installs upgrading from an older schema have no recipient data at all."""
+        got, _, _ = kinds(store(self.rows(subject="Alice assigned you a task")))
+        self.assertIn("assigned_work_at_risk", got)
+
+    def test_it_stays_quiet_when_that_mail_is_already_surfaced(self):
+        """The control: a category that is handled correctly needs no question."""
+        got, _, _ = kinds(store(self.rows(disposition="surfaced",
+                                          recipients="mention@noreply.example.com")))
+        self.assertNotIn("assigned_work_at_risk", got)
+
+    def test_ordinary_bot_traffic_raises_nothing(self):
+        got, _, _ = kinds(store(self.rows(recipients="team@example.com")))
+        self.assertNotIn("assigned_work_at_risk", got)
+
+
+class EscalationAsksByRecognition(unittest.TestCase):
+
+    def test_it_offers_the_senders_it_has_already_seen_you_flag(self):
+        rows = [dict(sender="Boss <boss@example.com>", importance="action-needed",
+                     disposition="kept")] * 3
+        _, items, _ = kinds(store(rows))
+        q = [i for i in items if i["kind"] == "escalation_contacts"][0]
+        self.assertTrue(q["multi"])
+        self.assertTrue(q["options"], "the list the tool already holds must be offered")
+        self.assertIn("Boss", q["options"][0])
+        self.assertIn("3", str(q["evidence"]["flagged_before"]) + "3")
+
+    def test_with_nothing_flagged_yet_it_falls_back_to_asking(self):
+        """A brand-new install has no history to recognise, and must still ask."""
+        _, items, _ = kinds(store(bulk(3)))
+        q = [i for i in items if i["kind"] == "escalation_contacts"][0]
+        self.assertEqual(q["options"], [])
+        self.assertIn("must never be filtered", q["question"])
+
+    def test_a_thin_data_loss_question_beats_a_huge_noise_question(self):
+        """The test that makes the floor load-bearing rather than decorative.
+
+        A single binned assignment is weak evidence; two hundred ignored messages from one
+        sender is strong evidence. Sorted on weight alone the pile wins, which is precisely
+        the ordering the field report argued against: being wrong about the pile is an
+        annoyance, being wrong about the assignment loses work.
+        """
+        rows = (bulk(200, disposition="surfaced")
+                + [dict(sender="Tracker <t@example.com>", category="bot-issue",
+                        disposition="trashed", subject="Alice assigned you a task",
+                        recipients="mention@noreply.example.com")])
+        got, items, _ = kinds(store(rows))
+        by_kind = {i["kind"]: i for i in items}
+        self.assertIn("assigned_work_at_risk", by_kind)
+        self.assertIn("sender_disposition", by_kind)
+        self.assertLess(by_kind["assigned_work_at_risk"]["weight"],
+                        by_kind["sender_disposition"]["weight"],
+                        "control: the noise question must have the HIGHER weight here, or "
+                        "this test proves nothing about the floor")
+        self.assertEqual(got[0], "assigned_work_at_risk")
+
+
+class UrgentSoundingIsNotNamed(unittest.TestCase):
+    """The false positive that took the top of the list on a real mailbox.
+
+    This signal outranks everything by design, so a false positive here does not merely add
+    a bad row - it becomes the first thing the owner reads, every time. Which is how a panel
+    teaches its reader to skim, which is the failure the whole tool argues against.
+    """
+
+    def test_a_marketing_blast_headed_action_required_is_not_an_assignment(self):
+        self.assertFalse(questions.names_a_person(
+            "[Action Required] Looks like you have been ghosting us!", "", None))
+
+    def test_the_same_words_addressed_to_you_directly_ARE(self):
+        """The corroboration rule, from the other side - otherwise the fix is just a
+        narrower blocklist and the real ones get dropped too."""
+        self.assertTrue(questions.names_a_person(
+            "[Action Required] Please confirm your address", "", 1))
+
+    def test_a_strong_marker_needs_no_corroboration(self):
+        self.assertTrue(questions.names_a_person("Alice assigned you a task", "", None))
+
+    def test_a_mention_address_in_the_recipient_list_counts(self):
+        self.assertTrue(questions.names_a_person(
+            "a build ran", "mention@noreply.example.com", None))
+
+    def test_the_word_mentions_in_a_subject_does_not(self):
+        """`\bmentions?@` and not `mentions?` - the second matched 'mentions of your
+        brand' in marketing subject lines."""
+        self.assertFalse(questions.names_a_person(
+            "Re: mentions of your brand", "marketing@example.com", None))
+
+    def test_the_regex_is_a_regex(self):
+        """A literal backspace character got written into this pattern during editing, so
+        it compiled, never errored, and matched nothing. Asserted because 'it compiles' and
+        'it means what it reads as' are different claims."""
+        self.assertNotIn("\x08", questions._ASSIGNED_TO.pattern)
+        self.assertTrue(questions._ASSIGNED_TO.search("mention@noreply.example.com"))
