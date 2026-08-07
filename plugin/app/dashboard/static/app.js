@@ -2286,7 +2286,10 @@ async function loadRepeats() {
 
   $("#repeatReach").innerHTML =
     `Grouped <b>${data.groups_examined}</b> sender+subject shapes; showing the ` +
-    `<b>${items.length}</b> that arrived <b>${data.min_notices}+</b> times. ` +
+    `<b>${items.length}</b> that arrived <b>${data.min_notices}+</b> times — ` +
+    // Live vs dormant, stated. A year of history accumulates finished series, and burying
+    // a live dunning notice under fifty completed ones is how a live one goes unread.
+    `<b>${data.live}</b> still running, <b>${data.dormant}</b> dormant (listed last). ` +
     `Counted by <i>distinct message</i> wherever the rows are linked - a message that sits ` +
     `in the inbox is re-listed by every run, and counting those would invent urgency. ` +
     `Rows marked <span class="warn">approximate</span> predate message linking, so they ` +
@@ -2299,9 +2302,11 @@ async function loadRepeats() {
     return;
   }
   items.forEach((it) => {
-    const row = el("div", "quiet-row" + (it.weight >= 3 ? " money" : ""));
+    const row = el("div", "quiet-row" + (it.weight >= 3 && !it.dormant ? " money" : "") +
+                              (it.dormant ? " dormant" : ""));
     const badges =
       (it.accelerating ? '<span class="qratio hot">arriving faster</span>' : "") +
+      (it.dormant ? '<span class="qcat">dormant</span>' : "") +
       (it.basis === "listings" ? '<span class="qcat warn">approximate</span>' : "");
     row.innerHTML =
       `<div class="qhead"><span class="qname">${esc(it.subject || "(no subject)")}</span>` +
@@ -2335,25 +2340,47 @@ async function loadRepeats() {
 
 // ---------- Gone quiet: the only panel that alarms by seeing NOTHING ----------
 
+let quietShowAll = false;
+
 async function loadQuiet() {
-  const data = await get("/api/quiet");
+  const data = await get("/api/quiet" + (quietShowAll ? "?include=all" : ""));
   const r = data.reach || {};
   // State the observation window BEFORE the findings. An absence claim is worth exactly
   // its stated reach, and this panel's entire output is absence claims.
   $("#quietReach").innerHTML =
     `Watching <b>${r.established || 0}</b> senders with an established rhythm ` +
-    `(of ${r.senders_total || 0} seen), across <b>${r.runs || 0}</b> runs ` +
+    `(of ${r.senders_total || 0} seen) over <b>${r.window_days || 0} days</b>, ` +
     `${esc(r.first_run || "")} to ${esc(r.last_run || "")}. ` +
     // Every sender is measured against the runs that covered ITS mailbox, not against all
     // of them. A historical intake creates runs that only ever touched one account, and
     // counting those as observations of every other account reports senders as silent when
     // nobody looked at them - which is an absence asserted by an instrument that never ran.
-    `Each sender is measured only against the runs that looked at <i>its own mailbox</i>, ` +
+    `Each sender is measured only against the days its <i>own mailbox</i> was looked at, ` +
     `so a backfilled day covering one account is not counted as silence from the others. ` +
-    `A sender qualifies after ${r.min_obs} appearances spanning ${r.min_span} runs, and is ` +
-    `flagged only when it has been silent <i>longer than its own worst gap ever</i>. ` +
-    `<span class="warn">Monthly billers cannot qualify yet</span> - the run history is too ` +
-    `short to see a monthly rhythm, so treat this as a watch on frequent senders only.`;
+    `A sender qualifies after ${r.min_obs} appearances spanning ${r.min_span_days} days, ` +
+    `and is flagged only when it has been silent <i>longer than its own worst gap ever</i> ` +
+    `— by at least ${r.min_ratio}x, and at least ${r.min_silence_days} days either way. ` +
+    // DERIVED from the window, not asserted. The old caption stated flatly that monthly
+    // billers could not qualify, and went on saying it after a year of arrival-dated
+    // history made them qualify - while a monthly bank statement sat at the top of the
+    // list it was captioning. A hard-coded caveat is a claim that goes stale in silence.
+    (r.monthly_observable
+      ? `The window is long enough to see a <b>monthly</b> rhythm.`
+      : `<span class="warn">Monthly billers cannot qualify yet</span> - the window is too ` +
+        `short to see a monthly rhythm, so treat this as a watch on frequent senders only.`) +
+    (data.hidden_social
+      ? ` <span class="muted">${data.hidden_social} social-notification sender` +
+        `${data.hidden_social === 1 ? " is" : "s are"} hidden — a friend posting less is ` +
+        `not a finding. <a href="#" id="quietAll">show them</a></span>`
+      : "");
+
+  if ($("#quietAll")) {
+    $("#quietAll").addEventListener("click", (e) => {
+      e.preventDefault();
+      quietShowAll = true;
+      loadQuiet();
+    });
+  }
 
   const wrap = $("#quietList");
   wrap.innerHTML = "";
@@ -2379,12 +2406,13 @@ async function loadQuiet() {
         `<span class="qcat">${esc(it.category)}</span>` +
         `<span class="qratio ${ratio}">${it.ratio}x its worst</span>` +
       `</div>` +
-      // "of N" because every sender has its own denominator now: the runs that covered
-      // its mailbox. Without it, a reader divides by the global run count and gets a
-      // number that is true of nothing.
-      `<div class="qbody">Silent <b>${it.silent_runs}</b> of the <b>${it.observed_runs}</b> runs that looked at this mailbox. ` +
-      `Never went more than <b>${it.worst_gap}</b> before, across ${it.observations} ` +
-      `appearances since ${esc(it.first_seen)}. Last seen <b>${esc(it.last_seen)}</b>.</div>` +
+      // DAYS, not runs. "Silent 105 of 173 runs" is a true sentence about the store and
+      // tells you nothing about your bank - and once a backfill exists, a run in 2025 and
+      // a run in 2026 no longer represent the same amount of the world.
+      `<div class="qbody">Silent <b>${it.silent_days} days</b>. ` +
+      `Never went more than <b>${it.worst_gap} days</b> before, across ${it.observations} ` +
+      `appearances from ${esc(it.first_seen)} to <b>${esc(it.last_seen)}</b>. ` +
+      `<span class="muted">Its mailbox was last looked at ${esc(it.last_looked)}.</span></div>` +
       (it.variants && it.variants.length > 1
         ? `<div class="qvar muted">folded ${it.variants.length} spellings: ` +
           `${it.variants.map(esc).join(" | ")}</div>`

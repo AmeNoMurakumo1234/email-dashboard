@@ -1706,11 +1706,26 @@ def api_repeats(conn, q):
         # approximate basis the gaps are partly my own re-listing cadence, so no claim is
         # made rather than a shaky one.
         accelerating = False
+        silence = (_days_between_dates(dates[-1], run_days[-1]) if run_days else None) or 0
+        med = statistics.median(gaps) if gaps else 0
         if basis == "messages" and len(gaps) >= 3:
             half = max(1, len(gaps) // 2)
             early = sum(gaps[:-half]) / max(1, len(gaps) - half)
             recent = sum(gaps[-half:]) / half
             accelerating = bool(recent * 1.5 < early)
+            # ACCELERATION IS A CLAIM ABOUT THE PRESENT TENSE, and the arithmetic above only
+            # looks at the gaps BETWEEN arrivals - so a series that stopped dead still
+            # reported "accelerating" on the strength of how it behaved before it stopped.
+            # This store had one at 246 days silent with a 4-day median, described as
+            # arriving faster. The gap between the last notice and now is a gap too; a
+            # series quiet for several of its own cycles is stalled, not speeding up.
+            if med and silence > med * 2:
+                accelerating = False
+        # DORMANT rather than dropped. Most of what a repeats panel accumulates over a year
+        # of history is series that ran their course - useful to have, ruinous to lead with,
+        # because a live dunning notice buried under fifty finished ones is a live dunning
+        # notice nobody sees.
+        dormant = bool(silence > max(med * 3, 30))
         concept = collections.Counter(r["concept"] for r in rs).most_common(1)[0][0]
         weight = 3 if concept in ("money (bills, receipts, banking)", "account & security",
                                   "family & people", "medical") else 1
@@ -1729,20 +1744,57 @@ def api_repeats(conn, q):
             "median_gap": statistics.median(gaps) if gaps else 0,
             "gap_unit": "days",
             "accelerating": accelerating,
+            "dormant": dormant,
             "concept": concept, "concept_key": concepts.key_of(concept),
             "weight": weight,
             "still_open": last["disposition"] in db.DELIBERATELY_KEPT,
             "dispositions": sorted({r["disposition"] for r in rs}),
         })
 
-    # Loudest first: weighty concepts, then accelerating, then sheer persistence.
-    items.sort(key=lambda it: (-it["weight"], -int(it["accelerating"]), -it["notices"]))
-    return {"items": items, "min_notices": min_n, "groups_examined": len(groups)}
+    # LIVE FIRST, then weight, then accelerating, then sheer persistence. Dormant series
+    # keep their place in the list rather than being hidden - they are real history, and a
+    # series can wake up - but they never outrank something still arriving.
+    items.sort(key=lambda it: (int(it["dormant"]), -it["weight"],
+                               -int(it["accelerating"]), -it["notices"]))
+    return {"items": items, "min_notices": min_n, "groups_examined": len(groups),
+            "dormant": sum(1 for it in items if it["dormant"]),
+            "live": sum(1 for it in items if not it["dormant"])}
 
 
 # ---------------------------------------------------------------- quiet senders
-MIN_OBS = 5      # appearances needed before this sender is claimed to have a rhythm
-MIN_SPAN = 21    # runs it must have spanned, so a 3-day burst is never called a cadence
+MIN_OBS = 5           # appearances needed before this sender is claimed to have a rhythm
+# 21, deliberately the same number the old runs-based threshold used: on a store that runs
+# once a day the two are the same quantity, so this is a change of UNIT and not a quiet
+# tightening of the bar riding along with it. The noise this panel was drowning in is
+# suppressed by the two floors below, which is where that argument belongs.
+MIN_SPAN_DAYS = 21    # calendar days they must span, so a 3-day burst is never a cadence
+
+# A RATIO NEEDS A FLOOR UNDER IT, and this panel shipped without one.
+#
+# "5x its worst" sounds decisive and means nothing when the worst gap was two days: any
+# sender that happens to write in bursts clears a multiple of a tiny number the moment it
+# pauses. The screenshot that prompted this had a sender at 1.25x - which is not an anomaly,
+# it is rounding - sitting in an alarm panel next to a bank that had genuinely vanished for
+# eight months. A panel where the real finding and the arithmetic artefact look the same is
+# a panel that gets ignored, and then the real one is lost with it.
+#
+# So a flag needs BOTH: meaningfully longer than its own worst gap, AND long enough in
+# absolute terms to be worth a person's attention at all.
+MIN_SILENCE_DAYS = 14
+MIN_RATIO = 1.5
+
+# Monthly senders need roughly this much history before a monthly rhythm is observable at
+# all. Used to DERIVE the caveat rather than assert it: the panel used to state flatly that
+# monthly billers could not qualify, which stopped being true the moment a year of arrival-
+# dated history existed - and it said so while a monthly bank statement sat at the top of
+# its own list. A hard-coded caveat is a claim that goes stale silently.
+MONTHLY_OBSERVABLE_DAYS = 150
+
+# Senders whose "rhythm" is really other people's behaviour. A friend posting less often is
+# not a finding a mail tool should raise, and left in they dominate the list by sheer count.
+# HIDDEN, NOT DROPPED: the count is reported and `?include=all` returns them, because
+# suppression that cannot be seen is indistinguishable from having found nothing.
+SOCIAL_CONCEPT = "social / platform notifications"
 
 # Which categories weigh more when a sender goes quiet. DERIVED from the concept map
 # rather than listed here, for two reasons.
@@ -1782,17 +1834,28 @@ def api_quiet(conn, q):
     median-based rule fires constantly on senders that are simply bursty (measured: a
     median-gap rule flagged over half of all senders, which is noise, not signal).
 
-    TWO THINGS THIS DELIBERATELY DOES NOT DO:
-      * It does not claim a cadence from a burst. MIN_OBS/MIN_SPAN mean three consecutive
-        days of mail is never mistaken for "arrives daily".
-      * It does not pretend to cover monthly billers. The observation window is only as
-        long as the run history, so a monthly sender contributes 2-3 observations and
-        cannot qualify. The response says so in `reach` rather than letting a thin panel
-        imply the money lane is being watched. The filing tree under bills/ and receipts/
-        holds the real multi-month cadence and is the right source for that - not built yet.
+    MEASURED IN CALENDAR DAYS. It used to count RUNS ELAPSED, on the reasoning that a day
+    with no run is not evidence of silence - which is sound, and which stopped being the
+    same quantity the moment a backfill existed. Runs are no longer evenly spaced in time:
+    a year of arrival-dated history packs hundreds of them into the past while the present
+    accumulates one a day, so a gap of "23 runs" in 2025 and "23 runs" in 2026 describe
+    completely different amounts of the world. The panel then reported "silent 105 of 173
+    runs", which is a true sentence about the store and tells a person nothing about their
+    bank.
 
-    Gaps are counted in RUNS ELAPSED, never calendar days: a day with no run is not
-    evidence of silence.
+    The soundness of the original reasoning is kept where it belongs: the observation
+    LATTICE still decides whether we looked, and only days on which this sender's mailbox
+    was actually examined can contribute. What changed is the UNIT the answer is reported
+    in - days, because that is what "gone quiet" means to the person reading it.
+
+    THREE THINGS THIS DELIBERATELY DOES NOT DO:
+      * It does not claim a cadence from a burst. MIN_OBS and MIN_SPAN_DAYS mean three
+        consecutive days of mail is never mistaken for "arrives daily".
+      * It does not treat a multiple as evidence on its own. See MIN_SILENCE_DAYS.
+      * It does not assert what it cannot see. Whether a monthly rhythm is observable is
+        DERIVED from the actual span of the window, not hard-coded - the hard-coded version
+        went stale and told the reader monthly billers could not qualify while a monthly
+        bank statement sat at the top of the list it was captioning.
     """
     # `account` is selected only if the table has it. A store older than the column - or a
     # test fixture that builds a minimal table - must still get a usable answer rather than
@@ -1823,6 +1886,21 @@ def api_quiet(conn, q):
     for r in rows_all:
         if r["account"]:
             per_account_days[r["account"]].add(r["run_date"])
+    # AND the days a run CONNECTED to that mailbox and found nothing worth recording.
+    # Deriving the lattice from messages alone means a mailbox only counts as observed on
+    # days it produced mail, which quietly shortens every silence measured against it - the
+    # sender is being credited for days nobody can prove anyone looked, in the direction
+    # that UNDER-reports. account_status is the table that actually records which accounts a
+    # run reached. It is a union rather than a replacement because the arrival-day backfill
+    # writes no account block at all (deliberately - see ingest --by-arrival), so on its own
+    # it would erase every backfilled day from the window.
+    try:
+        for r in rows(conn.execute(
+                "SELECT r.run_date, a.account FROM account_status a "
+                "JOIN runs r ON r.id = a.run_id WHERE a.account IS NOT NULL")):
+            per_account_days[r["account"]].add(r["run_date"])
+    except Exception:
+        pass
 
     # THE LATTICE COMES FROM `runs`, NOT FROM `messages`. The question this panel answers
     # is "when did I LOOK and see nothing", so the observation days are the days a run
@@ -1875,50 +1953,81 @@ def api_quiet(conn, q):
         lattice = [d for d in run_days if d in covered] if covered else list(run_days)
         if len(lattice) < 2:
             continue
-        pos = {run_days.index(day): i for i, day in enumerate(lattice)}
-        d = sorted({pos[i] for i in days if i in pos})
-        local_last = len(lattice) - 1
-        if len(d) < MIN_OBS or (d[-1] - d[0]) < MIN_SPAN:
+        # The DATES this sender appeared on, and the last date its mailbox was looked at.
+        # Everything below is calendar arithmetic on those, not index arithmetic on the
+        # lattice - the lattice's job is to decide WHETHER we looked, not to supply a unit.
+        seen_dates = sorted({run_days[i] for i in days if run_days[i] in covered}
+                            or {run_days[i] for i in days})
+        if len(seen_dates) < MIN_OBS:
+            continue
+        span_days = _days_between_dates(seen_dates[0], seen_dates[-1])
+        if span_days is None or span_days < MIN_SPAN_DAYS:
             continue
         established += 1
-        gaps = [b - a for a, b in zip(d, d[1:])]
+        gaps = _day_gaps(seen_dates)
+        if not gaps:
+            continue
         worst = max(gaps)
-        silence = local_last - d[-1]
-        if silence <= worst:
+        silence = _days_between_dates(seen_dates[-1], lattice[-1])
+        if silence is None:
+            continue
+        # BOTH tests, not either. Longer than it has ever been quiet AND long enough to
+        # matter - a sender whose worst gap was two days clears any multiple you like the
+        # moment it pauses over a weekend, and a 1.25x reading is rounding, not an anomaly.
+        if silence <= worst or silence < MIN_SILENCE_DAYS:
+            continue
+        if worst and silence < worst * MIN_RATIO:
             continue
         cat = cats[k].most_common(1)[0][0]
         items.append({
             "sender": k,
             "category": cat,
+            "concept": concepts.concept_of(cat),
             "weight": 2 if cat in MONEY_CATS else (1.5 if cat in GUARD_CATS else 1.0),
-            "silent_runs": silence,
-            # HOW MANY OBSERVATIONS THAT GAP IS OUT OF. Every sender is measured against a
-            # different sequence now - the runs that covered its own mailbox - so a bare
-            # "silent 105 runs" beside a global "252 runs" invites the reader to do a
-            # division that is not true of anything.
-            "observed_runs": len(lattice),
+            "silent_days": silence,
+            "gap_unit": "days",
+            # WHAT THE SILENCE IS OUT OF. Every sender is measured against a different
+            # window now - the days its own mailbox was looked at - so a bare number beside
+            # a global run count invites a division that is not true of anything.
+            "observed_days": len(lattice),
+            "window_days": _days_between_dates(lattice[0], lattice[-1]),
+            "last_looked": lattice[-1],
             "worst_gap": worst,
             "median_gap": statistics.median(gaps),
-            "ratio": round(silence / float(worst), 2),
-            "observations": len(d),
-            "last_seen": run_days[d[-1]],
-            "first_seen": run_days[d[0]],
+            "ratio": round(silence / float(worst), 2) if worst else None,
+            "observations": len(seen_dates),
+            "last_seen": seen_dates[-1],
+            "first_seen": seen_dates[0],
             "variants": sorted(variants[k]),
         })
 
     # Money and guard senders outrank promo noise at equal overdue-ness; within a weight,
     # the most anomalous first.
-    items.sort(key=lambda it: (-it["weight"], -it["ratio"]))
+    items.sort(key=lambda it: (-it["weight"], -(it["ratio"] or 0)))
+    show_all = (q.get("include", [""])[0] or "") == "all"
+    hidden_social = sum(1 for it in items if it["concept"] == SOCIAL_CONCEPT)
+    if not show_all:
+        items = [it for it in items if it["concept"] != SOCIAL_CONCEPT]
+    window = _days_between_dates(run_days[0], run_days[-1]) or 0
     return {
         "items": items,
+        # Reported, never silently dropped: a hidden count is the difference between "we
+        # found nothing else" and "we are not showing you the rest".
+        "hidden_social": 0 if show_all else hidden_social,
         "reach": {
             "runs": len(run_days),
+            "window_days": window,
             "first_run": run_days[0],
             "last_run": run_days[-1],
             "senders_total": len(seen),
             "established": established,
             "min_obs": MIN_OBS,
-            "min_span": MIN_SPAN,
+            "min_span_days": MIN_SPAN_DAYS,
+            "min_silence_days": MIN_SILENCE_DAYS,
+            "min_ratio": MIN_RATIO,
+            # DERIVED, not asserted. The old hard-coded "monthly billers cannot qualify"
+            # was true when written and false by the time anyone read it.
+            "monthly_observable": window >= MONTHLY_OBSERVABLE_DAYS,
         },
     }
 

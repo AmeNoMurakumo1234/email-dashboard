@@ -464,6 +464,10 @@ rect.hm-day:hover { stroke: #fff; stroke-width: 1.5; }
 .btn.primary { background: #16a34a; border-color: #16a34a; color: #fff; }
 .btn.primary:hover { background: #15803d; }
 
+/* A finished series stays in the list - it is real history, and a series can wake up - but
+   it must not compete visually with one that is still arriving. */
+.quiet-row.dormant { opacity: .62; }
+
 /* ---- the per-label breakdown, which is what makes a rule expressible at all ---- */
 .rule-slices { margin: 0 0 14px; }
 .rule-slices h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;

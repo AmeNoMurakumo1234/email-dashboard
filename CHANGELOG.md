@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.16.0 — gone quiet, in days, with the right dates
+
+The owner's verdict on the panel was *"still shows garbage data"*, and it was three separate
+things wearing one coat.
+
+### Fixed — the dates on the panel were wrong
+
+The worst of the three, and it looked entirely plausible, which is why it survived a rewrite
+of the same function. 0.12.2 started measuring each sender against its own shorter observation
+window — then read `first_seen` and `last_seen` back out of the **full** run list, using a
+position derived from the short one. Every date on the panel was wrong for every sender whose
+mailbox wasn't in every run.
+
+Measured on a live install: a bank's first-seen date was reported nearly a week before its real
+one, and its last-seen date almost three months early. Nothing errored, nothing looked odd, and
+the caption sat directly beneath a correctly-computed alarm.
+
+### Changed — silence is measured in calendar days
+
+It counted **runs elapsed**, on the sound reasoning that a day with no run is not evidence of
+silence. That stopped being the same quantity the moment a backfill existed: a year of
+arrival-dated history packs hundreds of runs into the past while the present accrues one a
+day, so "23 runs" in 2025 and "23 runs" in 2026 describe different amounts of the world. The
+panel reported *"Silent 105 of the 173 runs that looked at this mailbox"* — a true sentence
+about the store that tells nobody anything about their bank.
+
+The sound half is kept where it belongs: the observation **window** still decides whether
+anyone looked, and only days this sender's own mailbox was examined can contribute. What
+changed is the unit the answer is reported in. The threshold moved from 21 runs to 21 *days* —
+the same number, so this is a change of unit and not a quiet tightening riding along with it.
+
+A mailbox is now also counted as observed on days a run **connected to it and found nothing**,
+not only on days it produced mail. Taking the window from messages alone credits a sender for
+every day nobody can prove anyone looked — in the direction that under-reports silence, which
+is the direction that loses a stopped biller.
+
+### Added — a ratio needs a floor under it
+
+*"5x its worst"* sounds decisive and means nothing when the worst gap was two days: any sender
+that writes in bursts clears a multiple of a tiny number by pausing over a weekend. The panel
+carried one row at 5x and another at **1.25x** — which is not an anomaly, it is rounding —
+beside a bank that had genuinely vanished for six months. Where the real finding and the
+arithmetic artefact look the same, the panel gets ignored, and the real one goes with it.
+
+A flag now needs both: meaningfully longer than its own worst gap (1.5x), **and** long enough
+in absolute terms to be worth a person's attention (14 days).
+
+### Changed — social notifications are hidden, and the hiding is reported
+
+A friend posting less often is not a finding a mail tool should raise, and by sheer count they
+dominated the list. Hidden by default, **counted in the caption**, and `?include=all` returns
+them — suppression that cannot be seen is indistinguishable from having found nothing.
+
+### Fixed — the caption contradicted the list it was captioning
+
+It stated flatly that *"monthly billers cannot qualify yet — the run history is too short."*
+True when written; false once a year of arrival-dated history existed. It was still saying it
+while a monthly bank statement sat at the top of the list underneath. Now derived from the
+actual window.
+
+### Fixed — repeats called a stalled series "arriving faster"
+
+Acceleration is a claim in the present tense, and the arithmetic only ever compared the gaps
+**between** arrivals — never the gap between the last one and now. A series with a 4-day
+median, silent for 246 days, was badged *arriving faster*. The gap to the present is a gap
+too; a series quiet for several of its own cycles is stalled, not speeding up.
+
+Finished series are now marked **dormant** and sorted last rather than hidden — they are real
+history and a series can wake up, but burying a live dunning notice under fifty completed ones
+is how a live one goes unread.
+
 ## 0.15.0 — acknowledgement has a door
 
 `INSERT INTO acks` appeared in exactly one place in the codebase: the dashboard's HTTP

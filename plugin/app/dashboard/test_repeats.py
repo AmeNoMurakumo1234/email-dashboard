@@ -75,11 +75,42 @@ for gap in (12, 8, 4, 2):
     acc.append(pos)
     pos += gap
 acc.append(pos)
+# ENDING AT THE PRESENT. "Arriving faster" is a claim in the present tense, and this fixture
+# used to leave its last notice 23 days back on a 6-day cadence - four cycles of silence,
+# described as speeding up. It passed only because the code shared the same blind spot: the
+# arithmetic looked at gaps BETWEEN arrivals and never at the gap between the last one and
+# now. The live store had this at 246 days silent with a 4-day median, badged "arriving
+# faster". An accelerating series is one that is still arriving.
+shift = (len(RUNS) - 1) - acc[-1]
+acc = [i + shift for i in acc]
 c = build([(RUNS[p], "Biller", "Overdue notice", f"<a{i}@b>") for i, p in enumerate(acc)])
 row = items(c, min=3).get("Overdue notice")
 if not row or not row["accelerating"]:
-    fails.append("an accelerating series (gaps 12,8,4,2) was NOT flagged - the branch "
-                 "cannot fire, so a zero from it means nothing")
+    fails.append("an accelerating series (gaps 12,8,4,2) ending TODAY was NOT flagged - "
+                 "the branch cannot fire, so a zero from it means nothing")
+if row and row.get("dormant"):
+    fails.append("a series that arrived today was marked dormant")
+
+# 4b. THE OTHER SIDE OF IT: the identical series, stopped. Same gaps, same shape, same
+#     everything except that it ended and nothing came after. It must NOT be called
+#     accelerating, and it must be marked dormant so it cannot outrank a live one.
+early = []
+pos = 0
+for gap in (12, 8, 4, 2):
+    early.append(pos)
+    pos += gap
+early.append(pos)
+c = build([(RUNS[p], "Biller", "Overdue notice", f"<b{i}@b>") for i, p in enumerate(early)])
+row = items(c, min=3).get("Overdue notice")
+if not row:
+    fails.append("the stalled series vanished entirely - it is history, not noise")
+else:
+    if row["accelerating"]:
+        fails.append("a series silent for several of its own cycles was still called "
+                     "'arriving faster' - the present-tense claim nobody can act on")
+    if not row["dormant"]:
+        fails.append("a long-stopped series was not marked dormant, so it competes with "
+                     "the ones still arriving")
 
 # 5. And a steady monthly series must NOT be called acceleration.
 c = build([(RUNS[i * 10], "Biller", "Monthly statement", f"<m{i}@b>") for i in range(5)])
