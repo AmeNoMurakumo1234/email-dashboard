@@ -136,6 +136,8 @@ def _load_local_labels():
     A missing file is the normal case and is not an error.
     """
     import json as _json, os as _os
+    if _os.environ.get("EMAIL_DASHBOARD_NO_LOCAL_CONFIG") == "1":
+        return 0
     path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
                          "concepts.local.json")
     try:

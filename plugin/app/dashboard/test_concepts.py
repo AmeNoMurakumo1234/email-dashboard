@@ -15,6 +15,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import concepts as C
 
+# This file is honestly two things: unit assertions about the SHIPPED map, which hold on any
+# machine, and a health check on THIS install - does your local map cover the labels your own
+# runs write. The second kind is worth having and is the reason `tools/run_tests.py
+# --no-local-config` exists: it strips the local map to reveal which suites depend on the
+# machine. Under that flag the health check's premise is false by construction - the map has
+# been taken away and the DB still holds the labels it explained - so running it would report
+# a config problem that the flag itself caused. It is SKIPPED and SAID, never silently passed.
+LOCAL_IGNORED = os.environ.get("EMAIL_DASHBOARD_NO_LOCAL_CONFIG") == "1"
+
 fails = []
 
 
@@ -69,7 +78,10 @@ except FileNotFoundError:
 except Exception as _e:
     check("concepts.local.json is readable", False, "%s: %s" % (type(_e).__name__, _e))
 
-if _local_map:
+if LOCAL_IGNORED:
+    print("  SKIP local-label resolution - EMAIL_DASHBOARD_NO_LOCAL_CONFIG=1 removed the map "
+          "these assertions are about. Not checked is not passed.")
+elif _local_map:
     for _label, _want in _local_map.items():
         check("local label %r resolves to %r" % (_label, _want),
               C.concept_of(_label) == _want, C.concept_of(_label))
@@ -96,7 +108,10 @@ check("unknown key resolves to None, not a default concept",
 
 # --- the map must actually cover what is in the live DB ---
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "email_dashboard.db")
-if os.path.exists(DB):
+if LOCAL_IGNORED:
+    print("  SKIP live-DB coverage - the local map was stripped, so every personal label "
+          "would report UNMAPPED and blame the install for the flag.")
+elif os.path.exists(DB):
     import sqlite3
     conn = sqlite3.connect(DB)
     labels = [r[0] for r in conn.execute("SELECT DISTINCT category FROM messages")]

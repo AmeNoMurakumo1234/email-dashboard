@@ -44,10 +44,22 @@ def _state_path(account):
     return STATE_DIR / ("intake-%s.json" % safe)
 
 
+def _is_state(d):
+    """Is this actually an intake progress file, or just JSON that shares the name?
+
+    `status` globbed `intake-*.json` and handed every match to the reporter, which then
+    crashed on the first one that was a fetched BATCH rather than a plan - and batches land
+    in the same directory by default. A status command that dies on the contents of its own
+    output directory is not a status command.
+    """
+    return isinstance(d, dict) and isinstance(d.get("batches"), list) and "account" in d
+
+
 def load_state(account):
     try:
         with open(_state_path(account), encoding="utf-8") as f:
-            return json.load(f)
+            d = json.load(f)
+        return d if _is_state(d) else None
     except (OSError, ValueError):
         return None
 
@@ -203,8 +215,26 @@ def cmd_done(args):
 
 
 def cmd_status(args):
-    accounts = ([args.account] if args.account
-                else [p.stem.replace("intake-", "") for p in STATE_DIR.glob("intake-*.json")])
+    if args.account:
+        candidates = [args.account]
+    else:
+        # Read each file and ASK it whether it is a plan, rather than trusting the name.
+        # The glob also matches fetched batches, triaged runs, and anything else somebody
+        # drops here - none of which describe an intake.
+        candidates = []
+        for path in sorted(STATE_DIR.glob("intake-*.json")):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    d = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if _is_state(d):
+                candidates.append(d["account"])
+    seen, accounts = set(), []
+    for a in candidates:
+        if a not in seen:
+            seen.add(a)
+            accounts.append(a)
     if not accounts:
         print("no intake in progress")
         return 0

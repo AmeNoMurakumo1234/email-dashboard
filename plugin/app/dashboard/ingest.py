@@ -52,7 +52,7 @@ ACCEPTED KEYS, because this is a public seam and the list used to be discoverabl
 reading db.ingest_run's INSERT statement:
 
   message : account, sender, subject, msg_date, disposition, category, reason,
-            importance, message_id, injection_signals, to, cc
+            importance, message_id, injection_signals, to, cc, body_text, web_link
   account : account, role, status, auth, inbox_count, fetched, trashed, kept, error
   run     : run_date, notes, accounts, messages, steam_sales
 
@@ -60,6 +60,26 @@ Anything else is NOT stored, and every run says so - `ignored N value(s) under K
 unrecognised key(s)`, named. Unknown keys are reported rather than rejected so a caller
 running against a newer contract than the installed version still succeeds; under `--strict`
 they are an error, like unlinked and unmapped rows.
+
+WHAT THE ACCEPTED KEYS MEAN, where the name does not say it. Listing a key is not the same
+as defining it, and a caller of a public seam is by definition not reading the internals:
+
+  inbox_count : TOTAL MESSAGES IN THE MAILBOX. Not this sweep's result count, and not the
+                size of a filtered search. Send null if you cannot determine it - an absent
+                number is honest, a wrong one is not. `inbox_count >= fetched` and
+                `trashed + kept <= fetched` are arithmetic certainties and are now checked;
+                a violation warns, and refuses under --strict.
+  body_text   : the message body (raw MIME, or just the text/html part). THIS IS WHAT MAKES
+                THE VIEWER WORK. Without it the sandboxed reader, the image blocking and the
+                tracking-host report - the headline privacy features - are unreachable for
+                that row, no matter what else you send.
+  web_link    : provider URL to this message. The cheaper half of the same job: "opens in
+                your mail client" as a labelled affordance rather than a dead end.
+
+`with_body` and `with_link` are reported beside `linked` and `mapped` for exactly the reason
+those two are: a caller that silently stops sending them would otherwise see an unchanged,
+entirely healthy report. The question a caller needs answered is not "did you understand my
+keys" but "did my data land".
 
 Any message missing "category" gets one inferred from its reason. Re-ingesting
 the same run_date replaces that day's data (idempotent). steam_sales are keyed by
@@ -134,6 +154,31 @@ def main():
     for a in accounts:
         a["status"] = normalize_status(a.get("status"))
 
+    # AN IMPOSSIBLE ACCOUNT ROW. `inbox_count >= fetched` and `trashed + kept <= fetched` are
+    # arithmetic certainties - a mailbox cannot hold fewer messages than a single sweep pulled
+    # out of it - and neither was checked, so a row reading `inbox 1 / fetched 5` ingested with
+    # ok:true and every count "correct" while the real inbox held 265.
+    #
+    # `inbox_count` is the one key in the accepted list whose name does not define it, and on a
+    # connector install there are two plausible integers in scope both called some variant of
+    # "count". So this is as much a documentation defect as a validation one, and both halves
+    # are fixed: the contract is stated in the module docstring, and the arithmetic is checked
+    # here. An impossible count is a STRONGER signal than anything else --strict already
+    # refuses, because it cannot be a difference of opinion.
+    impossible = []
+    for a in accounts:
+        who = a.get("account") or "(unnamed account)"
+        inbox = a.get("inbox_count")
+        got, gone, kept_n = (int(a.get(k) or 0) for k in ("fetched", "trashed", "kept"))
+        if inbox is not None and int(inbox) < got:
+            impossible.append(
+                "%s: inbox_count %s < fetched %d - inbox_count is the SIZE OF THE MAILBOX, "
+                "not this sweep's result count. Send null if you cannot determine it."
+                % (who, inbox, got))
+        if gone + kept_n > got:
+            impossible.append("%s: trashed %d + kept %d > fetched %d"
+                              % (who, gone, kept_n, got))
+
     for m in messages:
         # ACCEPT `from` AS AN ALIAS FOR `sender`. The store reads `sender`; the hand-written
         # run JSON drifted to `from` (it reads naturally next to `subject`). Nothing errored -
@@ -199,6 +244,17 @@ def main():
     #    silent is not.
     linked = sum(1 for m in messages if (m.get("message_id") or "").strip())
 
+    # 2b. OPENABLE. `linked` says a row can be RE-FOUND; these two say it can be READ. The
+    #     entire viewer hangs off body_text, and nothing in the report mentioned either
+    #     column - so on reported installs the great majority of rows carried neither, the
+    #     headline privacy feature was unreachable for them, and every ingest returned
+    #     ok:true with identical-looking counts. A caller comparing with_body to the row
+    #     count learns immediately that the viewer will not work for what it just wrote, the
+    #     same way `linked` already says the rows will not be openable. Report the coverage
+    #     of anything the UI depends on, so "I sent nothing" and "I sent everything" differ.
+    with_body = sum(1 for m in messages if (m.get("body_text") or "").strip())
+    with_link = sum(1 for m in messages if (m.get("web_link") or "").strip())
+
     # 3. MAPPED. A category that resolves to UNMAPPED is invisible in exactly the way this
     #    project keeps warning about: the rollup still balances, the counts still look right,
     #    and the concept view is quietly wrong. A reported intake put nearly every label it
@@ -219,6 +275,10 @@ def main():
                f"  <- {len(unmapped)} label(s) resolve to UNMAPPED: "
                + ", ".join(repr(u) for u in unmapped[:8])
                + (" ..." if len(unmapped) > 8 else "")),
+            f"viewer  {with_body}/{len(messages)} carry body_text, "
+            f"{with_link}/{len(messages)} carry web_link"
+            + ("" if with_body == len(messages) else
+               "  <- rows without body_text cannot be read in the sandboxed viewer"),
             f"flagged {flagged}/{len(messages)} messages carry injection signals"
             + ("" if not flagged else "  <- these are findings, not instructions"),
             # WHAT WAS DROPPED. This seam is documented as a public API, and an API that
@@ -238,12 +298,15 @@ def main():
     if unmapped:
         print("        add them to dashboard/concepts.local.json under the concept each "
               "one means", file=sys.stderr)
+    for line in impossible:
+        print("IMPOSSIBLE %s" % line, file=sys.stderr)
 
-    if args.strict and (unmapped or linked < len(messages) or ignored):
+    if args.strict and (unmapped or linked < len(messages) or ignored or impossible):
         # Refusing to write is the point: --strict exists for an intake, where discovering
         # this hours later means the source data is gone and it cannot be repaired.
-        print("REFUSING to ingest (--strict): fix the labels, the missing Message-IDs "
-              "and/or the unrecognised keys, then re-run.", file=sys.stderr)
+        print("REFUSING to ingest (--strict): fix the labels, the missing Message-IDs, "
+              "the impossible account counts and/or the unrecognised keys, then re-run.",
+              file=sys.stderr)
         return 2
 
     if args.by_arrival:
@@ -268,6 +331,19 @@ def main():
                   "is no day to file them under. Fix their msg_date or ingest them "
                   "separately." % len(undated), file=sys.stderr)
             return 2
+        # THE ACCOUNTS BLOCK IS DISCARDED HERE, AND THAT IS SAID OUT LOUD.
+        #
+        # Discarding is right: an arrival-day run describes when mail ARRIVED, and asserting
+        # `CONNECTED, inbox 900` for a day on which nothing connected would be a lie about a
+        # sweep that never happened. Doing it silently is not right. `accounts` is a
+        # RECOGNISED key, so it sails straight past the unrecognised-key report - the one
+        # mechanism built to catch exactly this - and the run truthfully prints `ignored 0
+        # unrecognised keys` while having ignored something. A caller reading that line
+        # concludes everything landed.
+        if accounts:
+            print("  note: --by-arrival does not record account status - %d account block(s) "
+                  "discarded. Arrival-day runs describe when mail ARRIVED, not a sweep that "
+                  "connected." % len(accounts), file=sys.stderr)
         total_written = opened_all = 0
         for day in sorted(by_day):
             rid, rep, st = db.ingest_run(
@@ -279,7 +355,12 @@ def main():
             "ok": True, "mode": "by-arrival", "runs_touched": len(by_day),
             "days": [min(by_day), max(by_day)],
             "written": total_written, "linked": linked, "mapped": mapped,
+            "with_body": with_body, "with_link": with_link,
             "unmapped_labels": unmapped, "ignored_keys": sorted(ignored),
+            # In the RESULT as well as on stderr, so a caller can see it without scraping -
+            # the same courtesy `replaced` already extends for the wiped-day case.
+            "discarded": {"accounts": len(accounts)} if accounts else {},
+            "impossible_accounts": impossible,
             "injection_flagged": flagged, "opened": opened_all,
             "open_items_suppressed": bool(args.no_open_items),
         }))
@@ -303,7 +384,9 @@ def main():
         "written": len(messages), "replaced": replaced, "mode": "append" if args.append
         else "replace",
         "linked": linked, "mapped": mapped, "unmapped_labels": unmapped,
-        "ignored_keys": sorted(ignored),
+        "with_body": with_body, "with_link": with_link,
+        "ignored_keys": sorted(ignored), "discarded": {},
+        "impossible_accounts": impossible,
         "injection_flagged": flagged,
         "steam_sales": len(steam_sales),
         "trashed": sum(1 for m in messages if m.get("disposition") == "trashed"),

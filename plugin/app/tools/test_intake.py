@@ -223,3 +223,57 @@ class WindowedMailbox:
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class StatusSurvivesItsOwnOutputDirectory(unittest.TestCase):
+    """`status` globbed intake-*.json and handed every match to the reporter.
+
+    Batches land in that same directory by default, so the first fetched batch made the
+    status command crash with a KeyError. A status command that dies on the contents of its
+    own output directory is not a status command - and it fails at exactly the moment you
+    reach for it, which is when you have lost track of where an intake got to.
+    """
+
+    def setUp(self):
+        self._real = intake.STATE_DIR
+        intake.STATE_DIR = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        intake.STATE_DIR = self._real
+
+    def write(self, name, obj):
+        with open(intake.STATE_DIR / name, "w", encoding="utf-8") as f:
+            json.dump(obj, f)
+
+    def test_a_fetched_batch_in_the_same_directory_is_ignored(self):
+        self.write("intake-owner_example.com.json",
+                   {"account": "owner@example.com", "mailbox": "INBOX",
+                    "total_at_plan": 1, "batches": [
+                        {"n": 1, "uid_range": "1:9", "state": "pending",
+                         "fetched": None, "ingested": None}]})
+        # what `next --out runs/intake-batch-1.json` leaves behind
+        self.write("intake-batch-1.json",
+                   {"account": "owner@example.com", "mailbox": "INBOX",
+                    "messages": [{"uid": "1", "subject": "s"}]})
+        self.write("intake-batch-1-triaged.json",
+                   {"run_date": "2026-08-07", "messages": [], "accounts": []})
+        self.assertEqual(intake.cmd_status(Args(account=None)), 0)
+
+    def test_unreadable_json_beside_the_state_is_ignored(self):
+        with open(intake.STATE_DIR / "intake-broken.json", "w", encoding="utf-8") as f:
+            f.write("{ this is not json")
+        self.assertEqual(intake.cmd_status(Args(account=None)), 0)
+
+    def test_it_still_reports_a_real_plan(self):
+        """The control. Ignoring everything would also 'not crash'."""
+        self.write("intake-owner_example.com.json",
+                   {"account": "owner@example.com", "mailbox": "INBOX",
+                    "total_at_plan": 9, "batches": [
+                        {"n": 1, "uid_range": "1:9", "state": "done",
+                         "fetched": 9, "ingested": 9}]})
+        import io, contextlib                                      # noqa: PLC0415
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            intake.cmd_status(Args(account=None))
+        self.assertIn("owner@example.com", buf.getvalue())
+        self.assertIn("1/1", buf.getvalue())

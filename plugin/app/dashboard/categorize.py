@@ -20,16 +20,27 @@ _CONFIG_NAMES = ("categorize.local.json", "categorize.example.json")
 
 
 def _load_config():
-    for name in _CONFIG_NAMES:
+    names = _CONFIG_NAMES
+    if os.environ.get("EMAIL_DASHBOARD_NO_LOCAL_CONFIG") == "1":
+        # F25: fall through to the committed example, so a suite's result does not depend
+        # on the owner's private rules. The example is in git and is the same everywhere.
+        names = tuple(n for n in names if ".local." not in n)
+    global _loaded_from
+    for name in names:
         path = os.path.join(_HERE, name)
         if os.path.exists(path):
             with open(path, encoding="utf-8") as fh:
+                _loaded_from = path
                 return json.load(fh)
     raise FileNotFoundError(
         "no categorize config found; expected one of: " + ", ".join(_CONFIG_NAMES)
     )
 
 
+# WHICH file the rules came from. Two candidates resolved by a first-match loop is exactly
+# the shape where a caller believes it is running one set of rules and is running the other,
+# and nothing in the module said which. Cheap to record, and the isolation test asserts on it.
+_loaded_from = None
 _CONFIG = _load_config()
 
 # Order matters: first match wins. JSON arrays preserve order.

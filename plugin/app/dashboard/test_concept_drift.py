@@ -51,15 +51,31 @@ class TeachingTheMapRepairsTheStore(unittest.TestCase):
         concepts._LABEL_TO_CONCEPT.update(self._map)
 
     def test_a_label_learned_after_ingest_repairs_existing_rows(self):
-        """The reported case, in three steps: ingest unknown, teach the map, re-open."""
-        write_rows(self.conn, "inner-circle-fyi")
-        self.assertEqual(set(stored(self.conn, "inner-circle-fyi")), {concepts.UNMAPPED},
+        """The reported case, in three steps: ingest unknown, teach the map, re-open.
+
+        The label used to be `inner-circle-fyi`, which is a name a real owner would plausibly
+        teach their own map - and the plugin's own guidance tells them to. So this test, whose
+        whole subject is "teaching the map repairs the store", FAILED on any install where the
+        owner had taught the map that label: the feature under test and the thing that broke
+        the test were the same action. Worse, it failed in the useless direction - green on a
+        bare install, red on a configured one. See F25.
+
+        Two changes, and the second is the one that generalises: a sentinel label no map would
+        ever carry, and an ASSERTED precondition, so if it ever does collide the test says
+        which of its own assumptions broke instead of blaming the code.
+        """
+        label = "zz-f25-sentinel-label-no-real-map-teaches"
+        self.assertNotIn(label, concepts._LABEL_TO_CONCEPT,
+                         "this test requires a label no map on this machine has taught; "
+                         "if it collides, rename it - do not weaken the control below")
+        write_rows(self.conn, label)
+        self.assertEqual(set(stored(self.conn, label)), {concepts.UNMAPPED},
                          "control: it must be unmapped at write time")
 
-        concepts._LABEL_TO_CONCEPT["inner-circle-fyi"] = "colleagues & direct asks"
+        concepts._LABEL_TO_CONCEPT[label] = "colleagues & direct asks"
         db.init_db(db.connect(self.path))                    # what starting the server does
 
-        self.assertEqual(set(stored(db.connect(self.path), "inner-circle-fyi")),
+        self.assertEqual(set(stored(db.connect(self.path), label)),
                          {"colleagues & direct asks"})
 
     def test_it_is_idempotent_and_costs_nothing_when_the_map_is_unchanged(self):

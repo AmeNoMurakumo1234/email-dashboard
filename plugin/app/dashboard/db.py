@@ -328,6 +328,14 @@ def init_db(conn=None):
         _backfill_msg_day(conn)
         _reconcile_concepts(conn)
 
+        # account_status is a SET - one row per account per run - and the write path treated
+        # it as a log. Collapse first, THEN constrain: a CREATE UNIQUE INDEX in SCHEMA would
+        # run inside executescript before any migration could clean up, and abort the entire
+        # schema on exactly the stores that hold duplicates, which are the ones that need it.
+        _collapse_duplicate_account_status(conn)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_acct_run_account "
+                     "ON account_status(run_id, account)")
+
         # The injection label has to OUTLIVE ingest. Computed and then discarded, it was
         # invisible to the dashboard, so the one place a person would notice "this mail
         # tried to steer the triager" never showed it.
@@ -432,6 +440,63 @@ def _reconcile_concepts(conn):
     except sqlite3.Error as exc:
         print("concepts: could not reconcile (%s)" % exc, file=sys.stderr)
         return 0
+
+
+def _collapse_duplicate_account_status(conn):
+    """Fold each (run_id, account) group down to one row. Idempotent; returns rows removed.
+
+    `record_run(append=True)` gave `runs` a proper accumulate path and gave account_status an
+    unconditional INSERT, fifteen lines apart in the same function under the same flag. The
+    only thing that had ever held it to one row per account was the DELETE in the NON-append
+    branch, which append correctly skips because that branch also wipes the day's messages.
+
+    So every hourly top-up added another card for the same mailbox, and the account panel -
+    the one panel whose entire job is to say which mailboxes exist - counted rows and reported
+    "4/4 connected" for one mailbox. Self-concealing, because each card's counts were REAL: it
+    read as a healthy multi-mailbox install rather than as corruption. And it bit precisely
+    the deployments that sweep often, which is the guidance the plugin itself gives.
+
+    Counters SUM; snapshot fields take the LATEST value. Summing an inbox count is
+    meaningless, and a stale CONNECTED must never survive a later FAILED.
+    """
+    try:
+        dupes = list(conn.execute(
+            "SELECT run_id, account, COUNT(*) FROM account_status "
+            "GROUP BY run_id, account HAVING COUNT(*) > 1"))
+    except sqlite3.Error:
+        return 0
+    if not dupes:
+        return 0
+    removed = 0
+    for run_id, account, _n in dupes:
+        rows_ = list(conn.execute(
+            "SELECT id, role, status, auth, inbox_count, fetched, trashed, kept, error "
+            "FROM account_status WHERE run_id = ? AND account = ? ORDER BY id",
+            (run_id, account)))
+        keep = rows_[0][0]
+        latest = rows_[-1]
+        conn.execute(
+            "UPDATE account_status SET role = ?, status = ?, auth = ?, inbox_count = ?, "
+            "error = ?, fetched = ?, trashed = ?, kept = ? WHERE id = ?",
+            (latest[1], latest[2], latest[3], latest[4], latest[8],
+             sum(r[5] or 0 for r in rows_), sum(r[6] or 0 for r in rows_),
+             sum(r[7] or 0 for r in rows_), keep))
+        cur = conn.execute(
+            "DELETE FROM account_status WHERE run_id = ? AND account = ? AND id != ?",
+            (run_id, account, keep))
+        removed += cur.rowcount
+    conn.commit()
+    print("account status: collapsed %d duplicate row(s) across %d account/run pair(s)"
+          % (removed, len(dupes)), file=sys.stderr)
+    left = conn.execute("SELECT COUNT(*) FROM (SELECT 1 FROM account_status "
+                        "GROUP BY run_id, account HAVING COUNT(*) > 1)").fetchone()[0]
+    if left:
+        # A zero is a claim. Say it out loud rather than letting the CREATE UNIQUE INDEX
+        # below fail with an opaque IntegrityError on the owner's store.
+        raise sqlite3.IntegrityError(
+            "account_status still holds %d duplicate group(s) after the collapse migration; "
+            "the store was not repaired and the unique index cannot be created" % left)
+    return removed
 
 
 def _backfill_msg_day(conn):
@@ -917,10 +982,21 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
             run_id = cur.lastrowid
 
         for a in accounts:
+            # UPSERT, matching what `runs` does fifteen lines up. Counters accumulate so the
+            # day's card describes everything in it rather than the last batch; snapshot
+            # fields overwrite, because summing an inbox size is meaningless and a stale
+            # CONNECTED must not survive a later FAILED. Without this, every append invented
+            # a mailbox - see _collapse_duplicate_account_status.
             conn.execute(
                 "INSERT INTO account_status "
                 "(run_id, account, role, status, auth, inbox_count, fetched, trashed, kept, error) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(run_id, account) DO UPDATE SET "
+                "  role = excluded.role, status = excluded.status, auth = excluded.auth, "
+                "  inbox_count = excluded.inbox_count, error = excluded.error, "
+                "  fetched = account_status.fetched + excluded.fetched, "
+                "  trashed = account_status.trashed + excluded.trashed, "
+                "  kept    = account_status.kept    + excluded.kept",
                 (run_id, a.get("account"), a.get("role"), a.get("status"), a.get("auth"),
                  a.get("inbox_count"), int(a.get("fetched") or 0), int(a.get("trashed") or 0),
                  int(a.get("kept") or 0), a.get("error")),

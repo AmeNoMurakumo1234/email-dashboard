@@ -863,6 +863,16 @@ PROTECTED_FILE = os.path.join(CONFIG_DIR, "protected.local.json")
 ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "accounts.json")
 DASHBOARD_FILE = os.path.join(CONFIG_DIR, "dashboard.local.json")
 
+# NOT isolated by EMAIL_DASHBOARD_NO_LOCAL_CONFIG, deliberately, and the reason is worth a
+# note because the first attempt at F25 did redirect these and broke a test that was already
+# doing the right thing.
+#
+# Both paths hang off THIS FILE'S location, so a test that stands up a whole install in a temp
+# directory - which is what test_separation.py does - is already isolated, and the config it
+# writes there is config it MEANT to be read. Redirecting these under the flag took that away
+# and failed eight of its assertions. Controlling the install directory is the strong form of
+# isolation; a global "ignore local config" switch is the weak form, and where the strong form
+# is available the weak one must not override it.
 
 
 def load_dashboard_cfg():

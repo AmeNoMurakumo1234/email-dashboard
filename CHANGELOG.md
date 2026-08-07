@@ -1,5 +1,151 @@
 # Changelog
 
+## 0.13.0 — did my data land?
+
+Five defects, one shape: **input the seam accepts and then never mentions again.** `ingest.py`
+is documented as the supported entry point from any source, which means its callers are by
+definition not reading the internals — so anything it quietly drops, quietly mis-stores, or
+quietly leaves uncovered is invisible until long after the source data is gone.
+
+### Fixed — `account_status` is a set, and the writer treated it as a log
+
+One mailbox, one entry in `accounts.json`, and a panel reading **"4/4 connected"** with four
+cards each holding a fraction of the day's traffic.
+
+`record_run(append=True)` gave the `runs` row a proper accumulate path and gave
+`account_status` an unconditional `INSERT` — fifteen lines apart, in the same function, under
+the same flag. The only thing that had ever held it to one row per account was the `DELETE` in
+the *non-append* branch, which append correctly skips because that branch also wipes the day's
+messages.
+
+Self-concealing in a specific way: every per-card number was **real**, so nothing looked
+corrupted — it looked like a multi-mailbox install that was working. And it bit precisely the
+deployments that sweep more than once a day, which is what this plugin's own guidance tells
+them to do. A single daily sweep never saw it.
+
+Now an upsert on `(run_id, account)`: counters **sum**, snapshot fields **overwrite** — summing
+an inbox size is meaningless, and a stale `CONNECTED` must never survive a later `FAILED`. A
+collapse migration folds existing duplicates (counters summed, snapshots from the latest) and
+then creates the unique index the table always needed. The index is created in `init_db` after
+the collapse, never in `SCHEMA`: `executescript` runs before any migration, so a
+`CREATE UNIQUE INDEX` there would abort the entire schema on exactly the stores that hold
+duplicates — the ones that need fixing.
+
+Same class as the acknowledgement-key defect in 0.9.0: a fix applied in one place and not to
+the parallel structure beside it, invisible because each half was individually correct.
+
+### Added — `inbox_count` has a stated meaning, and impossible rows are refused
+
+`inbox_count >= fetched` and `trashed + kept <= fetched` are arithmetic certainties. Neither
+was checked, so a row reading `inbox 1 / fetched 5` ingested with `ok: true` and every count
+"correct", for a mailbox that actually held 265.
+
+It is the one key in the accepted list whose **name does not define it**, and on a connector
+install there are two plausible integers in scope both called some variant of "count". So both
+halves are fixed: the contract is now written down where the keys are listed —
+
+> `inbox_count` — total messages in the mailbox, **not** this sweep's result count. Send `null`
+> if you cannot determine it; an absent number is honest, a wrong one is not.
+
+— and the arithmetic is checked. Warns always; refuses under `--strict`, where an impossible
+count is a stronger signal than anything `--strict` already rejects, because it cannot be a
+difference of opinion.
+
+### Added — `with_body` and `with_link`, beside `linked` and `mapped`
+
+`linked` says a row can be re-**found**. Nothing said whether it could be **read**.
+
+`body_text` and `web_link` are what make the sandboxed viewer, the image blocking and the
+tracking-host report reachable — the headline privacy features — and they appeared in no
+report at all. A caller that silently stopped sending them saw an unchanged, entirely healthy
+result. On two installs checked, the great majority of rows carried neither — on one of them,
+every single row. Every ingest had returned `ok: true`.
+
+Both are now counted in the report and in the JSON result, and both are finally listed in the
+ACCEPTED KEYS block a caller actually reads — they were accepted by the store and undocumented
+at the seam, so sending them looked unsupported.
+
+### Added — `--by-arrival` says what it discarded
+
+It hard-codes `accounts=[]`, and the discard is probably **right**: an arrival-day run
+describes when mail *arrived*, and asserting `CONNECTED, inbox 900` for a day on which nothing
+connected would be a lie about a sweep that never happened. Doing it silently is not right.
+
+Because `accounts` is a **recognised** key, the discard sailed straight past the
+unrecognised-key report — the one mechanism built to catch exactly this — and the run
+truthfully printed `ignored 0 unrecognised keys` while having ignored something. Now reported
+on stderr and as `discarded` in the result, the same courtesy `replaced` already extends.
+
+### Fixed — a unit test could fail because of the owner's configuration
+
+`test_concept_drift` hard-coded the label `inner-circle-fyi` and asserted it was UNMAPPED as
+its control. That control holds only while no map on the machine has taught that label — and
+this plugin's own guidance tells owners to teach exactly that kind of label. So the test for
+*"teaching the map repairs the store"* failed on installs where the owner had taught the map:
+**the feature under test and the thing that broke the test were the same action.**
+
+It failed in the useless direction too — green on a bare install, red on a configured one. A
+suite that is expected to have one failure is a suite that no longer means anything.
+
+Two mechanisms now, and a suite that keeps both honest:
+
+- `tools/run_tests.py`, which **discovers** suites rather than listing them and reports the
+  count and roster every time. There was no runner; suites were run by hand, so the number of
+  suites was whatever anyone remembered it to be.
+- `--no-local-config`, which makes the config loaders behave as if no `*.local.json` existed.
+  Run the suite both ways: any suite whose **result differs** is reading live user config.
+
+The first attempt at this fix redirected `server.py`'s config paths under the same flag and
+broke eight assertions in a test that had been isolating correctly all along — by standing up
+its own install directory. Controlling the install directory is the strong form of isolation;
+a global switch is the weak form, and where the strong form is available the weak one must not
+override it.
+
+### Fixed — the export gate did not scan the file that is edited by hand every release
+
+The builder deliberately does not own `CHANGELOG.md`, `README.md` or `INSTALL.md`, because a
+build must never delete work it did not create. The consequence went unnoticed until it nearly
+cost something: files the program does not **write** were also files it did not **scan**, so the
+one public artefact edited by hand every release was the only one outside the boundary.
+
+A release note describing a defect is exactly where a count measured from somebody's real
+mailbox gets typed in as evidence — which is precisely what happened while writing this entry,
+and it was caught by hand rather than by the gate. Not owning a file and not checking it are
+different decisions. All three are now scanned, and a hit refuses the build like any other.
+
+## 0.12.3 — repeat cadence in calendar days, not runs
+
+The repeats panel measured gaps in **runs**, which stopped meaning anything once a historical
+backfill existed. Checked against a real recurring-notice series, the same sender's gaps came
+out roughly twice as large measured in runs as measured against the runs that actually covered
+its mailbox — and it matters more here than in the quiet panel, because *accelerating* compares
+early gaps to recent ones, so an intake concentrated in one period can manufacture or hide an
+acceleration outright.
+
+Copying the 0.12.2 fix would have been wrong: gaps in *runs* are the wrong unit for a claim
+about the world however you scope them. Repeats are now measured in **calendar days**, and
+every item states `days_since_last` and its `gap_unit`.
+
+One earlier attempt at this was **reverted rather than shipped** — building the per-mailbox
+lattice from grouped rows collapses it onto the sender's own arrivals, so every gap becomes 1
+and the acceleration branch cannot fire at all. It failed its positive control, which is what
+positive controls are for.
+
+## 0.12.2 — a backfill must not manufacture silence
+
+**A monthly biller was reported as several times its own worst silence without its behaviour
+changing at all.**
+
+After a historical intake a "run" no longer means "a sweep of every mailbox": most of the runs
+in a backfilled store were never sweeps, and the majority of those contained exactly **one**
+mailbox, because a backfill batch comes from a single account. Every statistic that counted
+runs as observations was then asserting an absence nobody had looked for — the project's own
+named failure mode, arriving through the tool's own backfill.
+
+Each sender is now measured against the runs that covered **its own mailbox**, and every row
+states its denominator (`observed_runs`). A sender whose mailbox cannot be determined keeps the
+full sequence: not knowing is no basis for narrowing.
+
 ## 0.12.1 — acknowledged leaves the list
 
 **Acknowledged no longer counts as outstanding.** The seen/done distinction is real, and it
