@@ -8,6 +8,7 @@ the daily routine writes to here via ingest.py.
 
 Stdlib only (sqlite3) — no third-party dependencies.
 """
+import json
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -55,7 +56,8 @@ CREATE TABLE IF NOT EXISTS messages (
     category     TEXT,                          -- the raw label as the run wrote it
     concept      TEXT,                          -- canonical concept (concepts.py); 'unmapped' if unknown
     reason       TEXT,
-    importance   TEXT                           -- action-needed / family / financial / security / info
+    importance   TEXT,                          -- action-needed / family / financial / security / info
+    injection_signals TEXT                      -- JSON list; mail addressed to the TRIAGER, not to a person
 );
 
 CREATE INDEX IF NOT EXISTS idx_msg_run     ON messages(run_id);
@@ -215,6 +217,12 @@ def init_db():
             conn.execute("ALTER TABLE messages ADD COLUMN msg_day TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_day ON messages(msg_day)")
         _backfill_msg_day(conn)
+
+        # The injection label has to OUTLIVE ingest. Computed and then discarded, it was
+        # invisible to the dashboard, so the one place a person would notice "this mail
+        # tried to steer the triager" never showed it.
+        if "injection_signals" not in mcols:
+            conn.execute("ALTER TABLE messages ADD COLUMN injection_signals TEXT")
 
         # THREAD ACK KEYS CHANGED SHAPE, so the ones already stored have to move with them.
         #
@@ -419,9 +427,17 @@ def mark_steam_ended(app_id, ended_date, checked_iso):
         conn.close()
 
 
-def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=None):
+def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=None,
+               append=False):
     """
-    Idempotent per run_date: replaces any existing data for that day.
+    Idempotent per run_date: REPLACES any existing data for that day. Returns
+    (run_id, replaced_count).
+
+    Replace is correct for a daily sweep and a footgun for a batched intake: every batch
+    had to re-send every message already ingested for that date, or the earlier ones were
+    silently deleted - and the return value reported the count it had just written, which
+    looked exactly like success. `append=True` adds to the day instead, and the caller is
+    told what was removed either way.
 
     accounts: list of dicts with keys
         account, role, status, auth, inbox_count, fetched, trashed, kept, error
@@ -438,24 +454,42 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
     init_db()
     conn = connect()
     try:
-        # wipe any prior data for this date, then re-create the run row
         row = conn.execute("SELECT id FROM runs WHERE run_date = ?", (run_date,)).fetchone()
+        replaced = 0
+        existing_id = row["id"] if row else None
         if row:
+            replaced = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE run_id = ?", (row["id"],)).fetchone()[0]
+        if row and not append:
+            # wipe any prior data for this date, then re-create the run row
             conn.execute("DELETE FROM messages WHERE run_id = ?", (row["id"],))
             conn.execute("DELETE FROM account_status WHERE run_id = ?", (row["id"],))
             conn.execute("DELETE FROM runs WHERE id = ?", (row["id"],))
+            existing_id = None
+        elif row and append:
+            replaced = 0            # nothing was removed; the day grew
 
         trashed = sum(1 for m in messages if m.get("disposition") == "trashed")
         kept = sum(1 for m in messages if m.get("disposition") in ("kept", "surfaced"))
         otp = sum(1 for m in messages if (m.get("category") or "").lower() == "otp")
         fetched = sum(int(a.get("fetched") or 0) for a in accounts) or len(messages)
 
-        cur = conn.execute(
-            "INSERT INTO runs (run_date, created_at, fetched, trashed, kept, otp, notes) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (run_date, now_iso(), fetched, trashed, kept, otp, notes),
-        )
-        run_id = cur.lastrowid
+        if existing_id is not None:
+            # Appending: keep the run row and carry the totals forward, so the day's
+            # numbers describe everything in it rather than only the last batch.
+            run_id = existing_id
+            conn.execute(
+                "UPDATE runs SET fetched = fetched + ?, trashed = trashed + ?, "
+                "kept = kept + ?, otp = otp + ?, created_at = ?, "
+                "notes = COALESCE(?, notes) WHERE id = ?",
+                (fetched, trashed, kept, otp, now_iso(), notes, run_id))
+        else:
+            cur = conn.execute(
+                "INSERT INTO runs (run_date, created_at, fetched, trashed, kept, otp, notes) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (run_date, now_iso(), fetched, trashed, kept, otp, notes),
+            )
+            run_id = cur.lastrowid
 
         for a in accounts:
             conn.execute(
@@ -475,8 +509,9 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
             conn.execute(
                 "INSERT INTO messages "
                 "(run_id, run_date, account, sender, subject, msg_date, msg_day, "
-                "disposition, category, concept, reason, importance, message_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "disposition, category, concept, reason, importance, message_id, "
+                "injection_signals) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, run_date, m.get("account"), m.get("sender"), m.get("subject"),
                  m.get("msg_date"),
                  # Normalised on WRITE, falling back to the run date so every row has a
@@ -485,7 +520,9 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
                  m.get("disposition"), m.get("category"),
                  concept_of(m.get("category")),
                  m.get("reason"), m.get("importance"),
-                 (m.get("message_id") or "").strip() or None),
+                 (m.get("message_id") or "").strip() or None,
+                 json.dumps(m["injection_signals"]) if m.get("injection_signals")
+                 else None),
             )
         conn.commit()
     finally:
@@ -498,7 +535,9 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
             s.get("app_id"), title=s.get("title"), url=s.get("url"),
             discount_pct=s.get("discount_pct"), seen_date=run_date)
 
-    return run_id
+    # BOTH numbers, always. A caller that only learns what it wrote cannot tell a clean
+    # append from a replace that silently deleted the previous nine batches.
+    return run_id, replaced
 
 
 if __name__ == "__main__":

@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.6.0 — the guarantees move to `ingest`, so they work without a fetcher
+
+Every safety property in this tool was bolted to the fetcher. Read-only was an `if` inside
+`mailtool`; injection labelling happened in `mailtool` and `msgraph`; linkage and
+concept-mapping were nobody's job at all. On an install that cannot run a fetcher — no app
+registration, IMAP closed at the tenant, mail arriving through a connector — **none of it
+ran, and nothing said so.** As the report put it: *the defense is not disabled, it is simply
+never reached, which is worse, because there is no signal that it is absent.*
+
+`ingest.py` already accepted plain JSON from any source. That makes it the seam, and the
+guarantees now live there.
+
+### `ingest.py` is a supported entry point, and now says so
+
+**Bring your own fetcher.** It takes plain JSON with no dependency on `mailtool`, `msgraph`,
+or anything else. If your organisation will not issue an app registration, has closed IMAP,
+or gives you mail through a connector, produce the JSON however you can and pipe it in —
+the dashboard, the record, the acks, the guard and the labelling all work identically.
+
+This was always true and written down nowhere, so a deployment that could not use the fetcher
+believed the whole tool was blocked for hours when only the fetcher was.
+
+### Added — read-only is a property of the RUN, not of one module
+
+`tools/runmode.py`. Whatever touches a mailbox asks the same question and gets the same
+refusal, and `test_backend_parity.py` fails if a mutating entry point stops asking. On the
+reporting install, the read-only phase was being enforced by a tool allowlist written into a
+prompt — *an instruction to a model, not a refusal by a program*, which is the weaker class of
+control this project spends its documentation arguing against.
+
+### Added — untrusted text is labelled at ingest, whatever produced it
+
+`untrusted.annotate_all()` runs at the universal entry points — ingest **and** the applier —
+rather than in the fetchers alone. A hand-written run JSON, a connector export and an IMAP
+sweep all get the same treatment, because none is more trustworthy than the sender. The label
+is now **stored**, so it outlives the run and stays visible instead of evaporating.
+
+One bug found doing it: `annotate` read `from` but not `sender`, so wherever the latter was in
+use — which is the store's own spelling — the display name was never examined. That is the
+field an impersonation actually forges.
+
+### Added — a seeded self-test, because a clean report was a zero with no evidence
+
+```
+python tools/untrusted.py --selftest
+```
+
+Fires every seeded injection case and confirms ordinary mail stays quiet. Nothing shipped
+that could prove the detector fires at all, so "no signals found" and "the detector is broken"
+looked identical from outside — the exact thing this project's own rule forbids everywhere
+else.
+
+### Added — every run states its reach
+
+```
+linked  N/N messages carry a Message-ID
+mapped  N/N messages resolve to a known concept
+flagged 1/N messages carry injection signals
+```
+
+- **linked** — a row ingested without a `message_id` is silently unopenable forever, and the
+  consequence appears much later in the viewer, by which time the source data is gone.
+- **mapped** — a label that resolves to nothing is invisible in the way this project keeps
+  warning about: the rollup still balances, the counts still look right, and the concept view
+  is quietly wrong. Unmapped labels are now **named**, with a pointer to where they belong.
+- `--strict` refuses to write incomplete data at all, for an intake where finding out later
+  means the data cannot be reconstructed.
+
+### Fixed — `ingest` reported success while deleting the previous batches
+
+Re-ingesting a `run_date` replaces that day wholesale. Correct for a daily sweep; a footgun
+for an intake done in batches, where every batch had to re-send everything already ingested
+for that date or the earlier rows were silently deleted — and the return value reported the
+count it had just written, which looked exactly like success.
+
+`--append` adds to a day instead, and the return now states **both** numbers:
+`{"written": 20, "replaced": 240}`.
+
 ## 0.5.2 — four things the dashboard stated confidently and got wrong
 
 From a defect report written by using the tool rather than reading it. Every item below was

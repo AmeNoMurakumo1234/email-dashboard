@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # the first person to reach for secrets.token_urlsafe in this tree would have got a module
 # that does not have it.
 import credstore as secret_store
+import runmode
 import untrusted
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -541,22 +542,18 @@ def cmd_send(args):
 
 
 def cmd_act(args):
-    # THE READING PHASE MUST NOT HOLD HANDS. Set MAILTOOL_READONLY=1 for any process that
-    # ingests mail text, and this refuses outright. The agent that reads attacker-written
-    # sender names and subjects is the one that must not also be able to move mail; the
-    # split lives in apply_proposal.py, and this is the latch that makes bypassing it an
-    # explicit act rather than an available shortcut.
+    # THE READING PHASE MUST NOT HOLD HANDS - asked of the SHARED latch, not answered here.
+    # This used to be an `if` in this function, which is a good control in the wrong place:
+    # it protected exactly one backend. On an install that cannot run mailtool at all - no
+    # app registration, IMAP closed at the tenant, a connector used instead - the project's
+    # central safety mechanism was simply absent, and nothing said so.
     #
-    # Not a security boundary on its own - anything that can set the variable can unset it -
-    # but it removes the capability from the phase that should not have it, which is the
-    # part that was actually missing.
-    if os.environ.get("MAILTOOL_READONLY", "").strip() not in ("", "0", "false", "False"):
-        raise SystemExit(
-            "REFUSED: MAILTOOL_READONLY is set, so this process may not move, delete or flag "
-            "mail.\n"
-            "  The triage step classifies and writes a proposal; tools/apply_proposal.py "
-            "applies it\n"
-            "  after re-deriving every entitlement from the store and the protected list.")
+    # runmode.enforce() is what every backend asks, and test_backend_parity fails if a
+    # mutating entry point stops asking.
+    try:
+        runmode.enforce("move, delete or flag mail", "mailtool (IMAP)")
+    except runmode.ReadOnlyRefusal as exc:
+        raise SystemExit(str(exc))
     conn, _ = connect(args.account)
     conn.select(args.mailbox)
     uids = args.uids.split(",")

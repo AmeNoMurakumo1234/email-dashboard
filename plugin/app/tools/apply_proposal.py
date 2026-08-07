@@ -41,6 +41,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "dashboard"))
 from server import (_sender_key, load_protected, protected_hit)          # noqa: E402
+import untrusted  # noqa: E402
 
 DB = ROOT / "dashboard" / "email_dashboard.db"
 MAILTOOL = HERE / "mailtool.py"
@@ -134,6 +135,12 @@ def main():
                 and (not args.account
                      or (m.get("account") or "").lower() == args.account.lower())]
 
+    # LABEL THE PROPOSAL HERE TOO, whatever produced it. The injection guard below refuses
+    # anything carrying signals - but if the only labeller was the fetcher, then on an
+    # install that cannot run one the guard had nothing to refuse and failed open silently.
+    # Re-labelling is idempotent, so a proposal already marked by a fetcher is unchanged.
+    flagged = untrusted.annotate_all(messages)
+
     prot = load_protected()
     print(f"proposal      : {args.proposal}")
     print(f"proposed trash: {len(messages)} message(s)"
@@ -151,6 +158,8 @@ def main():
     hist = _history(conn)
     print(f"guard         : {len(prot['names'])} protected name(s), "
           f"{len(prot['concepts'])} protected category(ies)")
+    print(f"injection     : {flagged} of {len(messages)} carry signals "
+          f"(labelled here, not trusted from the caller)")
     print(f"history       : {len(hist)} sender(s) with recorded messages\n")
 
     allowed, refused = [], []

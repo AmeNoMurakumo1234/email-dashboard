@@ -140,6 +140,27 @@ There is deliberately no `act` command.
 provider's `imap_host`; store the password under the field `password` (or `app_password`,
 which is tried first).
 
+### If none of those are available to you — bring your own fetcher
+
+**`ingest.py` is a supported entry point, not an internal detail.** It takes plain JSON from
+any source and has no dependency on the fetchers at all:
+
+```
+cat run.json | python dashboard/ingest.py --append
+```
+
+If the organisation will not issue an app registration, has closed IMAP, or gives you mail
+through a connector in your AI client, produce that JSON however you can and pipe it in. The
+dashboard, the record, the acks, the protected guard and the injection labelling all work
+identically — **only the fetcher is unavailable, not the tool.** Say this early rather than
+letting someone discover it after `doctor` reports `FAILED`.
+
+The shape is documented at the top of `dashboard/ingest.py`. The fields that matter for each
+message: `account`, `sender`, `subject`, `msg_date`, `disposition`, `category`, `reason`,
+`importance`, and **`message_id`** — that last one is what lets a row be opened later, and a
+row without it can never be linked afterwards. `ingest` reports `linked N/M` on every run so
+you find out immediately rather than months later.
+
 ## Step 4 — prove it connects, and say what you actually checked
 
 ```
