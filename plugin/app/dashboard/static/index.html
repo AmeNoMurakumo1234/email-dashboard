@@ -168,6 +168,7 @@
           <button class="ptab" data-view="steam">🎮 Steam sales</button>
           <button class="ptab" data-view="quiet">🔕 Gone quiet <span class="tabbadge" id="quietBadge" hidden></span></button>
           <button class="ptab" data-view="repeats">🔁 Repeats <span class="tabbadge" id="repeatBadge" hidden></span></button>
+          <button class="ptab" data-view="signins">🔐 Sign-ins <span class="tabbadge" id="signinBadge" hidden></span></button>
         </div>
         <div class="scope" id="trashScope">
           <span class="muted" id="trashScopeLabel">(all time)</span>
@@ -247,6 +248,17 @@
       <div id="quietView" hidden>
         <div class="quiet-reach muted" id="quietReach"></div>
         <div id="quietList"></div>
+      </div>
+
+      <!-- ESCALATE ON ANOMALY, NEVER ON OCCURRENCE. An alert that fires on every login is
+           not an alert, it is a log - and a log in an alert channel trains its reader to
+           stop opening it, so that the one message that matters arrives into a habit of not
+           looking. Routine sign-ins get a single line here; only what is anomalous gets a
+           card. The coverage line states how much was actually derivable, because "no
+           unknown devices" must never be readable as "every device was recognised". -->
+      <div id="signinsView" hidden>
+        <div class="quiet-reach muted" id="signinReach"></div>
+        <div id="signinList"></div>
       </div>
 
       <!-- THE SAME THING, ARRIVING AGAIN. One issue across three runs used to render as

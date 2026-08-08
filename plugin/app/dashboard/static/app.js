@@ -751,6 +751,7 @@ function setView(view) {
   $("#steamView").hidden = view !== "steam";
   $("#quietView").hidden = view !== "quiet";
   $("#repeatsView").hidden = view !== "repeats";
+  $("#signinsView").hidden = view !== "signins";
   $("#dispScope").hidden = view === "kept";      // fixed scope here; the chips would lie
   // railTitle belongs to the grouping control (Concepts / Raw labels) - which pile we are
   // looking at is carried by the active tab and by the results title, not by hijacking a
@@ -762,12 +763,14 @@ function setView(view) {
   // Neither the Steam panel nor the quiet panel is run-scoped - "gone quiet" is a question
   // about the WHOLE history by definition, so showing a run filter beside it would invite
   // exactly the scope confusion this panel exists to cure.
-  $("#trashScope").hidden = (view === "steam" || view === "quiet" || view === "repeats");
+  $("#trashScope").hidden = (view === "steam" || view === "quiet" || view === "repeats"
+                             || view === "signins");
   $("#steamScope").hidden = view !== "steam";
   if (view === "steam") loadSteam();
   else if (view === "senders") loadSenders();
   else if (view === "quiet") loadQuiet();
   else if (view === "repeats") loadRepeats();
+  else if (view === "signins") loadSignins();
   // The rail is disposition-scoped, so switching between trash and kept must RE-FETCH the
   // stats, not just re-filter the results - otherwise the kept tab shows trash categories.
   else loadTrash();
@@ -2347,6 +2350,100 @@ async function loadRepeats() {
       `${it.still_open ? " - still in the mailbox" : " - binned"}.</div>`;
     row.addEventListener("click", () => {
       ui.query = it.subject || ""; ui.category = null; ui.concept = null;
+      ui.page = 0; ui.disposition = "all";
+      persistUI();
+      $("#trashSearch").value = ui.query;
+      $("#trashClear").hidden = false;
+      document.querySelectorAll("#dispScope .chip").forEach((b) =>
+        b.classList.toggle("on", b.dataset.disp === "all"));
+      setView("trash");
+    });
+    wrap.appendChild(row);
+  });
+}
+
+// ---------- Sign-ins: escalate on ANOMALY, never on occurrence (rule 26) ----------
+//
+// An alert that fires on every login is not an alert, it is a log. Logs are things you
+// consult; alerts are things you trust. Merging them destroys the channel silently, because
+// nothing is ever WRONG - each notice is true, the reader simply learns that opening them
+// never pays, and by the time one matters that habit is built.
+//
+// So this panel has exactly two registers. Anomalies get a card and a reason. Everything
+// routine gets ONE LINE. And the coverage note is not decoration: device novelty is only as
+// good as what the provider put in the subject, and "no unknown devices" must never be
+// readable as "every device was recognised".
+
+async function loadSignins() {
+  const d = await get("/api/signins");
+  const s = d.summary || {}, cov = d.coverage || {}, w = d.window || {};
+  const anomalies = d.anomalies || [];
+
+  const badge = $("#signinBadge");
+  badge.hidden = !anomalies.length;
+  badge.textContent = anomalies.length;
+
+  const services = {};
+  (d.routine || []).forEach((r) => { services[r.service] = (services[r.service] || 0) + 1; });
+  const svcList = Object.keys(services).sort((a, b) => services[b] - services[a]);
+
+  $("#signinReach").innerHTML =
+    `Account-security mail from the last <b>${w.days}</b> days ` +
+    `(${esc(w.from || "")} to ${esc(w.to || "")}): <b>${w.judged}</b> messages judged, ` +
+    `<b>${w.baseline}</b> older ones used only to learn what is normal. ` +
+    // NOT MEASURED IS NOT ZERO.
+    `Device signatures come from the subject line, and most providers do not include one - ` +
+    `parsed for <b>${cov.device_parsed}</b> of ${cov.messages}. An unparsed notice is ` +
+    `<i>unknown</i>, never "known", so it falls back to whether the service itself is new. ` +
+    (d.bursts && d.bursts.length
+      ? `<span class="warn">${d.bursts.length} burst(s) detected.</span>`
+      : `No bursts: no window with sign-ins across ${3} or more services, which is the ` +
+        `shape of somebody working through a credential list.`);
+
+  const wrap = $("#signinList");
+  wrap.innerHTML = "";
+
+  // THE LEDGER. One line, always present, even at zero - because "6 sign-ins, all routine"
+  // and "we did not look" have to be distinguishable.
+  const ledger = el("div", "signin-ledger");
+  ledger.innerHTML =
+    `<b>${s.routine || 0}</b> routine sign-in${s.routine === 1 ? "" : "s"}` +
+    (svcList.length
+      ? ` across ${svcList.length} service${svcList.length === 1 ? "" : "s"}: ` +
+        svcList.map((k) => `${esc(k)}&nbsp;<span class="muted">${services[k]}</span>`)
+          .join(" &middot; ")
+      : "") +
+    `. <span class="muted">${s.consent || 0} consent receipt(s), ` +
+    `${s.policy || 0} terms/policy notice(s) - neither is an account event.</span>`;
+  wrap.appendChild(ledger);
+
+  if (!anomalies.length) {
+    wrap.appendChild(el("div", "empty",
+      "Nothing anomalous in this window. That is a measured all-clear over the reach " +
+      "stated above, not an absence of data."));
+    return;
+  }
+
+  anomalies.forEach((a) => {
+    const row = el("div", "quiet-row money");
+    row.innerHTML =
+      `<div class="qhead">` +
+        `<span class="qname">${esc(a.subject || "(no subject)")}</span>` +
+        `<span class="qcat">${esc(a.service || "")}</span>` +
+        (a.collapsed > 1
+          ? `<span class="qratio">${a.collapsed} notices, one event</span>` : "") +
+      `</div>` +
+      `<div class="qbody">${esc(String(a.msg_day || "").slice(0, 10))} &middot; ` +
+      `${esc(a.sender || "")}` +
+      (a.device ? ` &middot; <b>${esc(a.device)}</b>` : "") + `</div>` +
+      `<ul class="signin-why">` +
+      (a.reasons || []).map((r) => `<li>${esc(r)}</li>`).join("") + `</ul>` +
+      ((a.also || []).length
+        ? `<div class="qvar muted">also in this event: ` +
+          a.also.map(esc).join(" | ") + `</div>`
+        : "");
+    row.addEventListener("click", () => {
+      ui.query = a.subject || ""; ui.category = null; ui.concept = null;
       ui.page = 0; ui.disposition = "all";
       persistUI();
       $("#trashSearch").value = ui.query;

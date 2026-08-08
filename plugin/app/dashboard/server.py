@@ -23,6 +23,7 @@ from urllib.parse import urlparse, parse_qs
 import concepts
 import db
 import mailview
+import signin
 from categorize import LABELS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -459,6 +460,76 @@ def annotate_acks(conn, msgs):
         m["ack_key_message"], m["ack_key_thread"] = ids[0], kt
         m["acked"] = bool(any(i in acked_msg for i in ids) or kt in acked_thread)
     return msgs
+
+
+SIGNIN_WINDOW_DAYS = 30
+
+
+def api_signins(conn, q):
+    """Account-security mail split into what needs a person and what needs a line. (rule 26)
+
+    THE BASELINE IS THE PAST; ONLY THE WINDOW IS JUDGED. Everything older than the window
+    teaches the panel what normal looks like and is never reported on. Run without that split
+    and every service in the history reads as "first ever seen" the first time anyone opens
+    the page - a wall of novelty, delivered once, which would teach the owner on day one that
+    this panel cries wolf. That is the failure it exists to prevent, reproduced by its own
+    first run.
+
+    What escalates is argued in signin.py. What matters here is the shape of the answer: an
+    alert list, a one-line ledger, and a COVERAGE statement, because device novelty is only
+    as good as what the provider chose to put in the subject and "no unknown devices" must
+    never be readable as "every device was recognised".
+    """
+    try:
+        days = max(1, int((q.get("days") or [str(SIGNIN_WINDOW_DAYS)])[0]))
+    except (TypeError, ValueError):
+        days = SIGNIN_WINDOW_DAYS
+    rows_ = rows(conn.execute(
+        "SELECT sender, subject, msg_date, COALESCE(msg_day, run_date) msg_day, account, "
+        "message_id, category, concept, importance, disposition FROM messages "
+        "WHERE COALESCE(concept,'') = 'account & security'"))
+    # DISTINCT MESSAGES, not listings. The same notice is re-listed by every sweep while it
+    # sits in the inbox, and counting those would inflate a burst - the one signal here whose
+    # false positive is most expensive, because it is the one that says "someone is working
+    # through your accounts".
+    seen, uniq = set(), []
+    for r in sorted(rows_, key=lambda x: str(x["msg_day"] or "")):
+        key = (r["message_id"] or "").strip() or "%s|%s|%s" % (
+            (r["account"] or "").lower(), _sender_key(r["sender"]) or "",
+            " ".join((r["subject"] or "").split()).lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(dict(r))
+
+    last = max((str(r["msg_day"] or "") for r in uniq), default="")
+    cutoff = _shift_days(last, -days) if last else ""
+    window = [r for r in uniq if str(r["msg_day"] or "") >= cutoff]
+    baseline = [r for r in uniq if str(r["msg_day"] or "") < cutoff]
+
+    # A service is FINANCIAL if the store has money-concept mail from it. Derived from the
+    # record rather than a list someone has to maintain, for the same reason the guard's
+    # needles are: a list nobody updates goes stale in the direction of missing things.
+    fin = set()
+    for r in conn.execute("SELECT DISTINCT sender FROM messages "
+                          "WHERE concept = 'money (bills, receipts, banking)'"):
+        svc = signin.service_of(r["sender"])
+        if svc:
+            fin.add(svc)
+
+    out = signin.ledger(window, financial=fin, baseline=baseline)
+    out["window"] = {"days": days, "from": cutoff, "to": last,
+                     "judged": len(window), "baseline": len(baseline)}
+    return out
+
+
+def _shift_days(day, delta):
+    from datetime import date, timedelta
+    try:
+        y, m, d = (int(x) for x in str(day)[:10].split("-"))
+        return (date(y, m, d) + timedelta(days=delta)).isoformat()
+    except (ValueError, TypeError):
+        return str(day)[:10]
 
 
 def annotate_carried(conn, msgs, date):
@@ -2640,6 +2711,7 @@ API = {
     "/api/trash/list": api_trash_list,
     "/api/trash/senders": api_trash_senders,
     "/api/quiet": api_quiet,
+    "/api/signins": api_signins,
     "/api/calendar": api_calendar,
     "/api/repeats": api_repeats,
     "/api/acks": api_acks,

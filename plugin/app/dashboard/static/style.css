@@ -472,6 +472,15 @@ rect.hm-day:hover { stroke: #fff; stroke-width: 1.5; }
 .btn.primary { background: #16a34a; border-color: #16a34a; color: #fff; }
 .btn.primary:hover { background: #15803d; }
 
+/* The sign-in ledger. One line, ALWAYS rendered - even at zero - because "6 sign-ins, all
+   routine" and "nobody looked" have to be distinguishable at a glance. */
+.signin-ledger { font-size: 12.5px; line-height: 1.6; background: var(--panel-2);
+                 border: 1px solid var(--border); border-radius: 8px;
+                 padding: 9px 12px; margin-bottom: 12px; }
+.signin-why { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.5;
+              color: var(--muted); }
+.signin-why li { margin: 1px 0; }
+
 /* Suppression that cannot be seen is indistinguishable from having found nothing, so the
    count of held-back repeats gets a real line rather than a silent shorter list. */
 .carried-note { font-size: 12px; color: var(--muted); background: var(--panel-2);

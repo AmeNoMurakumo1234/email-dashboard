@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.18.0 — escalate on anomaly, never on occurrence
+
+0.17.0 stopped the same message being raised four days running. This is the other half: making
+the messages that remain worth reading.
+
+**An alert that fires on every login is not an alert, it is a log.** Logs are things you
+consult; alerts are things you trust. Merging them destroys the channel *silently*, because
+nothing is ever wrong — every notice is true, the reader simply learns that opening them never
+pays, and by the time one matters that habit is already built.
+
+### Added — a sign-in ledger, and anomalies that earn their card
+
+Routine sign-ins get **one line**: *"6 routine sign-ins across 4 services."* The line is
+rendered even at zero, because "six sign-ins, all routine" and "nobody looked" have to be
+distinguishable.
+
+Escalated individually, with the reason stated:
+
+- **A change, not a login.** Password, 2FA, recovery address or phone, app password, access
+  token, OAuth grant, passkey, trusted device, account closed. These are the *steps* of a
+  takeover and differ from a sign-in in kind: a sign-in happens constantly and legibly, a
+  recovery-address change happens twice a decade and locks you out.
+- **The provider itself calling a device or location new or unrecognised** — worth more than
+  anything we can infer, because they are comparing against their own history of the account.
+- **A blocked, prevented or failed attempt.** Evidence somebody tried.
+- **Novelty** — a device never seen for that service, or the first notice ever recorded for
+  the service at all.
+- **A financial or protected service**, derived from the store's own money-concept mail rather
+  than a list somebody has to maintain.
+- **The burst** — sign-ins across three or more services in one window. This is the one with
+  no individual evidence at all: every message in it is unremarkable on its own, so it exists
+  only *across* messages and a tool that judges one message at a time cannot see it by
+  construction. It is exactly the pattern alarm fatigue guarantees a person will miss.
+
+### Added — one event is one item
+
+A single desktop setup produced six notices within minutes, across two sender addresses.
+Notices from one service inside a short window collapse into one item, and the **reasons
+union** rather than the first one winning — the interesting thing about that cluster was that
+it contained both a new passkey *and* a new trusted device, and keeping one would turn a
+collapse into a loss. Notices hours apart do **not** collapse: two sign-ins to one service in
+a day are two events, and the second is the one that isn't you.
+
+### The honesty constraints
+
+**The baseline is the past; only the window is judged.** Older mail teaches the panel what
+normal looks like and is never reported on. Without that split, the first run hands the owner
+a wall of "first ever seen" — teaching them on day one that the panel cries wolf, which is the
+failure it exists to prevent, reproduced by its own first run.
+
+**The parser under-claims.** Device signatures come only from the subject line, most providers
+don't include one, and the coverage is stated. An unparsed notice is **unknown**, never
+"known". An early version took any capitalised word after "from" or "on" and pulled *required*
+out of "[ACTION REQUIRED]", reporting it as a device never seen before — a fabricated anomaly
+in the one panel whose entire value is being believed when it fires.
+
+**Silence is the dangerous output**, so every escalation has a positive control. Sixteen
+mutants, all caught. Two survived the first pass — nothing covered blocked attempts, and the
+collapse test used routine sign-ins where the collapse never runs — and a third survived after
+the fixtures were de-branded, because three addresses on one domain fold anyway. The
+distinction that matters is one display name across *different* domains, and it now has a test
+that can only pass one way.
+
+### Fixed — the export gate's address pattern stopped at two domain labels
+
+An address on a deeper domain was reported truncated, so the reserved-domain allowlist never
+saw the part that made it safe. A false positive in the direction that trains people to wave
+the gate through, which is the one kind of gate failure that spreads.
+
 ## 0.17.0 — already seen is not news
 
 Reported by an owner, before any of it was measured: so much repeated security mail arriving
