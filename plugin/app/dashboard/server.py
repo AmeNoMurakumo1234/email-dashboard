@@ -109,12 +109,34 @@ def api_run(conn, q):
     # the reason and the paper trail all stay - they simply stop competing for attention,
     # which is the other half of the drowning problem.
     annotate_acks(conn, messages)
+    annotate_carried(conn, messages, date)
 
-    surfaced = [m for m in messages if m["disposition"] in db.DELIBERATELY_KEPT]
+    # ALREADY SEEN IS NOT NEWS.
+    #
+    # A message that is still sitting in the inbox gets re-listed by every run, so the same
+    # item was surfaced day after day - one Google notice appeared on four consecutive days
+    # with nothing whatsoever having changed. Measured on a live store, account-security
+    # listings outnumbered the DISTINCT messages behind them by about three to two - so
+    # roughly two in five of the "alerts" a person read were a repeat of one already read.
+    #
+    # That is how a security channel gets destroyed. Not by being wrong - by being boring in
+    # a way that teaches its reader to skip it, so that the one alert that matters arrives
+    # into a habit of not looking. The volume of DISTINCT security mail here is about one
+    # every other day, which is fine; it was the repetition that made it unreadable.
+    #
+    # Carried items are NOT dropped from the payload - they are marked, counted and returned,
+    # because a panel that quietly showed fewer things would be the same silence in the
+    # pleasant direction. The UI leads with what is new and states what it held back.
+    show_carried = (q.get("carried", ["0"])[0] or "0") == "1"
+    surfaced_all = [m for m in messages if m["disposition"] in db.DELIBERATELY_KEPT]
+    carried_n = sum(1 for m in surfaced_all if m.get("carried"))
+    surfaced = surfaced_all if show_carried else [m for m in surfaced_all
+                                                 if not m.get("carried")]
     trashed = [m for m in messages if m["disposition"] in db.DISPOSABLE]
     return {"run_date": date,
         "accounts_as_of": accounts_as_of, "run": run, "accounts": accounts,
             "surfaced": surfaced, "trashed": trashed,
+            "carried_hidden": 0 if show_carried else carried_n,
             "totals": {"fetched": run.get("fetched", 0), "trashed": run.get("trashed", 0),
                        "kept": run.get("kept", 0), "otp": run.get("otp", 0)}}
 
@@ -436,6 +458,65 @@ def annotate_acks(conn, msgs):
                      m.get("account"))
         m["ack_key_message"], m["ack_key_thread"] = ids[0], kt
         m["acked"] = bool(any(i in acked_msg for i in ids) or kt in acked_thread)
+    return msgs
+
+
+def annotate_carried(conn, msgs, date):
+    """Mark rows that were already surfaced on an EARLIER run, and say when.
+
+    A message still sitting in the inbox is re-listed by every sweep, so an item the owner
+    read on Monday was raised again on Tuesday, Wednesday and Thursday with nothing about it
+    having changed. Measured on this store: 108 account-security listings covering 68
+    distinct messages, and the worst offenders appeared on four separate days each.
+
+    That is how an alert channel dies. Not by being wrong - by being repetitive in a way that
+    trains its reader to skip it, so the one alert that matters arrives into a habit of not
+    looking. The owner said exactly this, unprompted, before the numbers were measured.
+
+    IDENTITY, THE SAME PROBLEM ACKS HAD. A row is the same item as an earlier one if its
+    Message-ID matches; where there is no Message-ID it falls back to the account+sender+
+    subject shape. Preferring the Message-ID and falling back only when it is missing is what
+    stops a linking pass from silently changing what counts as "already seen" - the defect
+    `ack_identities` exists to prevent, met again from a different direction.
+    """
+    def shape_of(account, sender, subject):
+        """account|sender|subject, or None when there is nothing identifying in it.
+
+        The guard is on SENDER AND SUBJECT, not on the whole string. The first version
+        rejected only a wholly empty shape - and the account is always present, so
+        "owner@example.com||" sailed through and would have matched every subject-less,
+        sender-less row in that mailbox: one stale row silencing an unbounded set. The
+        account cannot disambiguate anything on its own; it is the other two that identify.
+        """
+        s = _sender_key(sender) or ""
+        subj = " ".join((subject or "").split()).lower()
+        if not s and not subj:
+            return None
+        return "%s|%s|%s" % ((account or "").strip().lower(), s, subj)
+
+    prior_ids, prior_shapes = set(), {}
+    try:
+        rows_ = conn.execute(
+            "SELECT message_id, account, sender, subject, MIN(run_date) first_run "
+            "FROM messages WHERE run_date < ? AND disposition IN (%s) "
+            "GROUP BY message_id, account, sender, subject"
+            % ",".join("?" * len(db.DELIBERATELY_KEPT)),
+            (date,) + tuple(sorted(db.DELIBERATELY_KEPT)))
+    except Exception:
+        return msgs
+    for r in rows_:
+        mid = (r["message_id"] or "").strip()
+        if mid:
+            prior_ids.add(mid)
+        shape = shape_of(r["account"], r["sender"], r["subject"])
+        if shape:
+            prior_shapes.setdefault(shape, r["first_run"])
+    for m in msgs:
+        mid = (m.get("message_id") or "").strip()
+        shape = shape_of(m.get("account"), m.get("sender"), m.get("subject"))
+        m["carried"] = bool((mid and mid in prior_ids)
+                            or (not mid and shape and shape in prior_shapes))
+        m["first_surfaced"] = prior_shapes.get(shape) if m["carried"] and shape else None
     return msgs
 
 

@@ -237,7 +237,7 @@ async function loadRun() {
   });
 
   renderAccounts(data.accounts || [], data.accounts_as_of);
-  renderSummary(data.surfaced || []);
+  renderSummary(data.surfaced || [], data.carried_hidden || 0);
   await loadTrash();
 }
 
@@ -341,12 +341,33 @@ const HEAD = {
 
 let lastSurfaced = [];
 
-function renderSummary(msgs) {
+function renderSummary(msgs, carriedHidden) {
   lastSurfaced = msgs || [];
   const wrap = $("#summary");
   wrap.innerHTML = "";
+  // ALREADY SEEN IS NOT NEWS - said out loud rather than quietly shown. A message still in
+  // the inbox is re-listed by every sweep, so the same item was raised on four consecutive
+  // days with nothing changed, and two in five of the security "alerts" read here were a
+  // repeat of one already read. That is how a channel gets ignored before it matters.
+  if (carriedHidden) {
+    const note = el("div", "carried-note");
+    note.innerHTML = `<b>${carriedHidden}</b> item${carriedHidden === 1 ? "" : "s"} ` +
+      `already surfaced on an earlier run ${carriedHidden === 1 ? "is" : "are"} not ` +
+      `repeated here. <a href="#" id="showCarried">show them</a>`;
+    wrap.appendChild(note);
+    $("#showCarried").addEventListener("click", async (e) => {
+      e.preventDefault();
+      // currentDate, not ui.date - ui.date carries the sentinel "latest", and sending that
+      // as a date would ask the API for a run that does not exist.
+      const d = await get("/api/run?carried=1" +
+                          (currentDate ? "&date=" + encodeURIComponent(currentDate) : ""));
+      renderSummary(d.surfaced || [], 0);
+    });
+  }
   if (!msgs.length) {
-    wrap.appendChild(el("div", "empty", "Nothing surfaced for this run."));
+    wrap.appendChild(el("div", "empty", carriedHidden
+      ? "Nothing NEW surfaced for this run - everything above was already raised earlier."
+      : "Nothing surfaced for this run."));
     return;
   }
   // Acknowledged items COLLAPSE, they do not disappear. Default closed so they stop

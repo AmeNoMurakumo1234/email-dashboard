@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.17.0 — already seen is not news
+
+Reported by an owner, before any of it was measured: so much repeated security mail arriving
+that a real alert would get ignored, because the habit of not looking had already been trained.
+
+The store agreed, and the number is the whole story: **account-security listings outnumbered
+the distinct messages behind them by about three to two.** Roughly two in five of the "alerts"
+being read were a repeat of one already read. One provider notice was raised on four
+consecutive days with nothing about it changed. The volume of *distinct* security mail was
+about one message every other day — perfectly readable. It was the repetition that made the
+channel unreadable.
+
+### Fixed — a message already surfaced on an earlier run is not surfaced again
+
+Mail still sitting in the inbox gets re-listed by every sweep. That is a fact about the
+mailbox, not news, and it was never a *wrong* answer — which is exactly why nothing ever
+caught it. It was a repetitive one, and repetition is how an alert channel trains its reader
+to skip it, so that the one alert that matters arrives into a habit of not looking.
+
+On the day this shipped the daily list fell by two thirds.
+
+Carried items are **marked, counted and returned**, never dropped: the panel leads with what
+is new and says *"11 items already surfaced on an earlier run are not repeated here — show
+them."* A shorter list with no explanation would be the same silence this project argues
+against everywhere else, just in the pleasant direction.
+
+**Identity is the Message-ID, falling back to the account+sender+subject shape only when there
+isn't one** — the same rule acknowledgements use, for the same reason: a later linking pass
+must not silently change what counts as "already seen." That distinction is load-bearing here
+in a way it is easy to miss. A *second* sign-in notice with an identical subject is a different
+event, and keying the check on the subject alone would make it vanish at precisely the moment
+somebody else is signing in to your account. There is a test for that case specifically.
+
+Suppression is the dangerous kind of feature, because every test that it hides things is also
+satisfied by a panel that hides everything. The suite is weighted the other way: a genuinely
+new message, a second message with the same subject, a changed subject on the same thread, the
+same subject from a different sender or in a different mailbox, and the held-back count itself
+all have to survive. The binned list is untouched — suppression belongs to the attention queue;
+the trashed list is a ledger, and a day's record of what it binned has to be complete.
+
+### Changed — the "why" column gets the room it needs
+
+It carried by far the most text — a paragraph of reasoning, and the whole argument for keeping
+a record is that the reasoning survives — and had the least room per character on the row. The
+space came from the account and sender columns, which are short, repetitive, and were wide
+enough to wrap an address in the middle of a word. Row heights roughly halved.
+
 ## 0.16.0 — gone quiet, in days, with the right dates
 
 The owner's verdict on the panel was *"still shows garbage data"*, and it was three separate
