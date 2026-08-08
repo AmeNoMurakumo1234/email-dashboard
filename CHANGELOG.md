@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.20.0 — the disposer records what it disposed
+
+Found by using the tool rather than testing it: run a sweep, apply the cleared set, then read
+the store. Six messages sitting in Trash, nine rows still saying `would_trash`, and the run row
+reporting **`trashed 0`**.
+
+`apply_proposal --apply` moved mail and never wrote back. So the record said *"judged
+disposable, **not** acted on"* about messages it had just acted on — the mirror image of the
+defect that created `would_trash` in the first place. There, the store overstated a judgment
+nobody had made; here it understated an action it did take.
+
+It matters beyond tidiness. Both values are `DISPOSABLE`, so the guard was never misled — but
+**"did the routine actually bin this?" had no answer anywhere in the record**, and a day's own
+numbers disagreed with the list underneath them. Telling what was *decided* from what was
+*done* is the entire reason this vocabulary exists.
+
+Now the applier promotes exactly the rows it moved, matched on Message-ID, and carries the run
+row with them. Three things it deliberately does not do:
+
+- **It does not promote the guard's refusals.** Those stay `would_trash`, which is now a true
+  statement about them: judged disposable, and deliberately not acted on.
+- **It does not overwrite a row somebody has since re-triaged.** Only rows still sitting at
+  `would_trash` — an apply from an older proposal must not quietly bin something a person has
+  decided to keep.
+- **It never turns a bookkeeping failure into a disposal failure.** The mail has already moved
+  by the time this runs; reporting an error here would send someone hunting for messages that
+  are exactly where they should be.
+
 ## 0.19.2 — a web link is a handle, not decoration
 
 `backfill_bodies.py` required a Message-ID and called every other row **a permanent hole**.

@@ -228,12 +228,18 @@ def main():
 
     # Group by account: mailtool takes UIDs per mailbox, and a UID means nothing without one.
     by_account = {}
+    # The Message-IDs that go with those uids, kept in step so the record can be updated
+    # afterwards. The uid moves the mail; the Message-ID is what the store is keyed on, and
+    # a uid is stale the moment the message lands in Trash.
+    by_message = {}
     for m, _ in allowed:
         uid = str(m.get("uid") or "").strip()
         acct = m.get("account")
         if uid and acct:
             by_account.setdefault(acct, []).append(uid)
+            by_message.setdefault(acct, []).append((acct, (m.get("message_id") or "").strip()))
     moved = 0
+    done_ids = []
     for acct, uids in by_account.items():
         r = subprocess.run(
             [sys.executable, str(MAILTOOL), "act", "--account", acct,
@@ -241,14 +247,60 @@ def main():
             capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode == 0:
             moved += len(uids)
+            done_ids += [(acct, mid) for a2, mid in by_message.get(acct, []) if a2 == acct]
             print(f"  {acct}: moved {len(uids)} to Trash")
         else:
             print(f"  {acct}: FAILED - {(r.stderr or r.stdout)[-300:]}")
     skipped = len(allowed) - sum(len(v) for v in by_account.values())
     if skipped:
         print(f"  ({skipped} cleared message(s) had no uid/account and were left alone)")
+
+    promoted = record_disposals(conn, done_ids)
     print(f"\napplied {moved} of {len(messages)} proposed.")
+    if promoted:
+        print(f"record updated: {promoted} row(s) would_trash -> trashed.")
     return 1 if refused else 0
+
+
+def record_disposals(conn, moved):
+    """Tell the store what was actually DONE. The other half of propose/dispose.
+
+    The applier moved mail and never wrote back, so the record said `would_trash` -
+    "judged disposable, NOT acted on" - about messages that had in fact been acted on. The
+    mirror image of the defect that created `would_trash` in the first place: there, the
+    store overstated a judgment it had not made; here it understates an action it did take.
+
+    It matters beyond tidiness. `would_trash` and `trashed` are both DISPOSABLE, so the guard
+    is not misled - but "did the routine actually bin this?" had no answer anywhere, and the
+    run row went on reporting `trashed 0` while messages were in the Trash folder. A record
+    that cannot distinguish what was decided from what was done is exactly the thing this
+    vocabulary was introduced to fix.
+
+    Only rows this run actually moved, matched on Message-ID, and only ones still sitting at
+    `would_trash` - never a row somebody has since re-triaged by hand.
+    """
+    ids = [mid for _, mid in moved if mid]
+    if not conn or not ids:
+        return 0
+    try:
+        cur = conn.execute(
+            "UPDATE messages SET disposition = 'trashed' "
+            "WHERE disposition = 'would_trash' AND message_id IN (%s)"
+            % ",".join("?" * len(ids)), ids)
+        n = cur.rowcount
+        # The run row counts what was DONE, so it has to move with them or the day's own
+        # numbers disagree with the list underneath.
+        conn.execute(
+            "UPDATE runs SET trashed = trashed + ?, kept = MAX(0, kept - 0) "
+            "WHERE run_date IN (SELECT DISTINCT run_date FROM messages "
+            "WHERE message_id IN (%s))" % ",".join("?" * len(ids)), [n] + ids)
+        conn.commit()
+        return n
+    except sqlite3.Error as e:
+        # Never fatal: the mail HAS moved, and failing here must not make a successful
+        # disposal look like a failed one.
+        print(f"  (could not update the record: {type(e).__name__}: {e})")
+        return 0
 
 
 if __name__ == "__main__":
