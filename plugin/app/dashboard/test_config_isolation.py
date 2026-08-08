@@ -133,7 +133,26 @@ class NoSuiteReadsTheOwnersConfigDirectory(unittest.TestCase):
                          "a suite passes with the owner's config and fails without it (or "
                          "the reverse) - it is reading live user configuration:\n"
                          + results[True][1][-3000:] + "\n---\n" + results[False][1][-3000:])
-        self.assertEqual(results[False][0], 0, results[False][1][-3000:])
+        # A NON-ZERO RUN IS ONLY ACCEPTABLE IF NOTHING ACTUALLY FAILED.
+        #
+        # This test runs the whole suite twice, and three of those suites drive the live
+        # dashboard - so when it is not running, both runs come back non-zero for a reason
+        # that has nothing to do with config isolation. Demanding a clean zero turned that
+        # into a reported config-isolation failure: a true refusal for an entirely
+        # misleading reason, which is the same complaint this file was written about.
+        #
+        # A genuine failure still fails here. The distinction is exactly the one
+        # `run_tests.py` now draws, and it only means anything because the two are printed
+        # under different headings.
+        out = results[False][1]
+        if results[False][0] != 0:
+            self.assertNotIn("FAILED:", out,
+                             "a suite genuinely failed, config isolation aside:\n"
+                             + out[-3000:])
+            self.assertIn("COULD NOT RUN:", out,
+                          "the run was non-zero and named neither a failure nor a suite "
+                          "that could not run - so nobody can tell which it was:\n"
+                          + out[-3000:])
 
 
 if __name__ == "__main__":

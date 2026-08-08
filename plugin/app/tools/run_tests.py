@@ -71,11 +71,20 @@ def main(argv=None):
         print("NO SUITES FOUND - that is a failure, not a pass", file=sys.stderr)
         return 2
 
-    failed = []
+    # EXIT 2 MEANS "COULD NOT RUN", and it is reported as its own thing.
+    #
+    # Three suites drive the live dashboard, and folding "nothing was listening on the port"
+    # into "FAILED" hides the one fact the reader needs: those assertions were never
+    # evaluated. Folding it into "passed" would be far worse - it is how a green board comes
+    # to cover code nothing has executed - so it still fails the run. Named, counted, and
+    # never silent.
+    failed, unrun = [], []
     for d, name in suites:
         rc, secs, lines = run_one(d, name, env)
-        mark = "ok  " if rc == 0 else "FAIL"
-        if rc != 0:
+        mark = {0: "ok  ", 2: "SKIP"}.get(rc, "FAIL")
+        if rc == 2:
+            unrun.append((d, name, lines))
+        elif rc != 0:
             failed.append((d, name, lines))
         if not args.quiet or rc != 0:
             print("%s %-28s %-10s %5.1fs" % (mark, name, d, secs))
@@ -83,12 +92,18 @@ def main(argv=None):
     print()
     print("%d suite(s)%s" % (len(suites),
                              ", local config IGNORED" if args.no_local_config else ""))
+    if unrun:
+        print("COULD NOT RUN: %d - these need the dashboard running; not one assertion in "
+              "them was evaluated" % len(unrun))
+        for _, name, _ in unrun:
+            print("   - %s" % name)
     if failed:
         print("FAILED: %d" % len(failed))
         for d, name, lines in failed:
             print("\n--- %s/%s" % (d, name))
             for ln in lines[-25:]:
                 print("    " + ln)
+    if failed or unrun:
         return 1
     print("ALL PASS")
     return 0

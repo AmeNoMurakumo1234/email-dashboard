@@ -15,7 +15,16 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:9770"
+BASE = os.environ.get("EMAIL_DASHBOARD_BASE") or "http://127.0.0.1:9770"   # overridable so a
+# test can point the preflight at a port it KNOWS is dead, and so anyone running the
+# dashboard on another port can drive these against it.
+
+# PREFLIGHT. This suite drives the LIVE dashboard, and without one it used to dump a raw urllib traceback
+# instead of saying so. A suite that did not run is neither a pass nor a failure.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from livecheck import require_dashboard                              # noqa: E402
+require_dashboard(BASE, 'test_ack.py')
+
 fails = []
 
 

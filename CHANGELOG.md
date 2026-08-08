@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.18.1 — a suite that did not run is not a suite that passed
+
+Three suites drive the live dashboard over HTTP. That is the right way to test them — the
+entitlement checks they cover live in the request handler, and calling the functions directly
+would skip the guard a browser actually meets.
+
+With no server running they behaved three different ways, all wrong. Two dumped a raw urllib
+traceback, which reads as *"the ack guard is broken"* rather than *"nothing was listening on
+the port."* One **hung until it was killed** — worse than either, because a hang reads as
+slowness, so the honest answer never reaches anybody and in a batch it just eats the clock.
+
+The good news, checked before anything was changed: none of them ever passed silently. The
+count was never hollow. But "could not run" was being reported as "failed", and those are
+different facts.
+
+### Added — a preflight, and a third outcome in the runner
+
+A short socket probe before a single request is made: if nothing is listening, print what is
+wrong and how to start it, and exit **2**. Non-zero deliberately — skipping would let the
+runner report ALL PASS over a suite that never executed a line, which is how a green board
+comes to cover code nothing has run.
+
+`tools/run_tests.py` now reports **COULD NOT RUN** separately from **FAILED**, names the
+suites, and still fails the run. `EMAIL_DASHBOARD_BASE` overrides the port, so the guard can
+be tested against one known to be dead — and so anyone running the dashboard elsewhere can
+drive these against it.
+
+### Fixed — the install test now refuses an occupied port instead of testing whatever is on it
+
+`plugin/test_install.py` installs a plugin, starts a dashboard on a spare port, and asks that
+port what it is. If something was **already** listening, the new server could not bind and
+every probe answered from the other process. The whoami check caught it — but only at the end,
+and only as a cryptic mismatch between two temp-directory names.
+
+Not hypothetical: interrupting a test run leaks the dashboard it started, and the next run
+minutes later fails exactly that way. An occupying process on this port has done real harm
+here before, when a run bound to a leftover server and wrote over a real protected-sender
+list. It now refuses up front and says what it found.
+
 ## 0.18.0 — escalate on anomaly, never on occurrence
 
 0.17.0 stopped the same message being raised four days running. This is the other half: making
