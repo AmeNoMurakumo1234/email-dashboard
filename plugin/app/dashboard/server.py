@@ -2289,32 +2289,45 @@ def api_message(conn, q):
     #
     # `doctor` already says NOT FETCHED HERE. Same vocabulary here.
     backend = _backend_for_account(account)
-    if backend == "connector":
-        row = conn.execute(
-            "SELECT web_link, body_text FROM messages WHERE message_id = ? "
-            "AND account = ? ORDER BY id DESC LIMIT 1", (mid, account)).fetchone()
-        stored_body = (row["body_text"] if row else None) or ""
-        # THE SANITISING READER, ON AN INSTALL WITH NO FETCHER. If the connector supplied a
-        # body at ingest there is nothing to fetch: the text-first view, the blocked
-        # images and the tracking-host report are the whole point of this tool and were
-        # unreachable for every row on this class of install. Fed into the SAME
-        # parse-and-sanitise path below rather than a second one - a second rendering route
-        # is a second place for image blocking to be subtly different, and the one nobody
-        # tests is the one that leaks.
-        prefetched = _as_mime_bytes(stored_body) if stored_body.strip() else None
-        if prefetched is None:
-            return {
-                "ok": False,
-                "reason": "no_local_fetcher",
-                "searched": False,
-                "error": "this account has no local fetcher",
-                "detail": ("Declared as fetched elsewhere, so nothing here went looking. "
-                           "That is the configuration working, not a fault - and it says "
-                           "nothing about whether the message exists."),
-                "hint": ("Supply `body_text` at ingest to read messages in the sandboxed "
-                         "viewer, or `web_link` to open them in your mail client."),
-                "web_link": (row["web_link"] if row else None),
-            }
+
+    # A STORED BODY IS USED WHATEVER THE BACKEND IS.
+    #
+    # This used to live inside the connector branch alone, on the reasoning that a connector
+    # install has no fetcher and therefore needs it. True, and the wrong place to put it: the
+    # value of a stored body has nothing to do with which backend the account uses. A message
+    # is immutable, so re-fetching one buys no freshness - it buys a network round trip, a
+    # subprocess, and a hard dependency on the mail still being where it was.
+    #
+    # The consequence was that a backfill of `body_text` across an IMAP store changed
+    # NOTHING: every row had its body sitting in the column and every open still went to the
+    # network to get a second copy. It would have kept working right up until it didn't, and
+    # the failure would arrive years later against mail nobody can retrieve any more.
+    #
+    # Stored first, fetch second. The fetch is the fallback now, not the default.
+    row = conn.execute(
+        "SELECT web_link, body_text FROM messages WHERE message_id = ? "
+        "AND account = ? ORDER BY id DESC LIMIT 1", (mid, account)).fetchone()
+    stored_body = (row["body_text"] if row else None) or ""
+    if stored_body.strip():
+        prefetched = _as_mime_bytes(stored_body)
+    elif backend == "connector":
+        # NO STORED BODY AND NO FETCHER. Nothing here can go looking, and saying "not found"
+        # would report an absence nobody searched for - the failure this endpoint was
+        # rewritten to remove, in the one place the tool has the MOST certainty about what
+        # happened. `doctor` says NOT FETCHED HERE; same vocabulary.
+        prefetched = None
+        return {
+            "ok": False,
+            "reason": "no_local_fetcher",
+            "searched": False,
+            "error": "this account has no local fetcher",
+            "detail": ("Declared as fetched elsewhere, so nothing here went looking. "
+                       "That is the configuration working, not a fault - and it says "
+                       "nothing about whether the message exists."),
+            "hint": ("Supply `body_text` at ingest to read messages in the sandboxed "
+                     "viewer, or `web_link` to open them in your mail client."),
+            "web_link": (row["web_link"] if row else None),
+        }
     else:
         prefetched = None
 

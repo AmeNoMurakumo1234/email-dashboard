@@ -59,7 +59,7 @@ So:
    mail even if it is talked into wanting to.
 
    ```
-   MAILTOOL_READONLY=1 python tools/mailtool.py fetch --account <address> --days 2
+   MAILTOOL_READONLY=1 python tools/mailtool.py fetch --account <address> --days 2 --with-body
    ```
 
    Write the run JSON with, for every message: `disposition`, `category`, `reason`,
@@ -72,10 +72,16 @@ So:
      permanently, while still refusing with sound reasons. `would_trash` says what you
      actually concluded: **judged disposable, not acted on.** Use `kept` / `surfaced` /
      `saved` only where you mean it.
-   - Send `body_text` (and `web_link` if the source has one) whenever you have them. They
-     are what make the sandboxed viewer, the image blocking and the tracking-host report
-     reachable for that row; without them a message is recorded but cannot be read.
-     `ingest.py` reports `with_body` and `with_link` so you can see whether they landed.
+   - **Send `body_text`** (and `web_link` if the source has one). With the bundled fetcher
+     that is `fetch --with-body`, which costs NOTHING extra on the wire - it already
+     downloads the whole message and discards it after taking a snippet.
+     Without a stored body the viewer falls back to RE-FETCHING each message on demand. That
+     works, so nothing looks wrong - until the mail is no longer in the mailbox, at which
+     point the sandboxed reader, the image blocking and the tracking-host report all stop
+     working for it, years later, for reasons nobody will connect back to ingest.
+     `ingest.py` reports `with_body` and `with_link` so a run says which rows it just made
+     unreadable-later. `dashboard/backfill_bodies.py` repairs history (resumable, read-only);
+     rows with no Message-ID can never be repaired.
    - `message_id` is what lets the message be reopened later. A UID will not do: it is
      per-folder and is reassigned the moment a message moves, so any UID captured before a
      trash step is already stale.

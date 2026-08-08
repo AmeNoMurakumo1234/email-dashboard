@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.19.0 — the body you already downloaded
+
+A store ran for a year with `body_text` NULL on **every row**, and nothing looked wrong. The
+viewer falls back to re-fetching each message on demand, so the sandboxed reader, the image
+blocking and the tracking-host report all worked — right up until a message was no longer in
+the mailbox. That is not a working feature; it is one that fails later, quietly, against mail
+nobody can retrieve any more.
+
+### Added — `fetch --with-body`, which costs nothing
+
+`fetch` already pulls `BODY.PEEK[]` for every message and **throws the whole thing away** after
+taking a 400-character snippet. Carrying it through adds no round trip, no session, and no
+extra bytes on the wire. The expensive-looking fix had already been paid for.
+
+Attachments are excluded on purpose: the viewer renders the body, and carrying a large PDF into
+a SQLite column would make the store's size a function of what other people email you.
+
+### Fixed — a stored body is used whatever the backend is
+
+**This is the one that mattered, and without it everything above changes nothing.**
+
+The stored body was only ever consulted inside the *connector* branch, on the reasoning that a
+connector install has no fetcher and therefore needs it. True, and the wrong place for it: the
+value of a stored body has nothing to do with which backend an account uses. A message is
+immutable, so re-fetching buys no freshness — it buys a network round trip, a subprocess, and a
+hard dependency on the mail still being where you left it.
+
+So on an IMAP store, every row could have had its body sitting in the column and every single
+open would still have gone to the network for a second copy. A backfill would have been pure
+waste. Measured after the fix: opening a two-week-old message went from an IMAP round trip to
+**0.03s from the store**.
+
+The assertion in the new suite is therefore not "the right bytes come back" — they did before.
+It is that **no subprocess runs**. That is the difference between a body that is stored and a
+body that is merely *also* stored. The control matters as much: without a stored body, an IMAP
+account must still fetch, or the message is simply unreachable.
+
+### Added — `backfill_bodies.py`, for history
+
+Resumable by construction (it only ever selects rows lacking a body), read-only against the
+mailbox, and it names why each row it skipped was skipped — *"skipped 40"* on its own invites
+the reader to assume the mail is gone when it might equally be a mailbox that would not
+connect, and those call for opposite responses.
+
+**Measured before building, and the measurement changed the plan.** The assumption was that old
+mail would be gone and only a fix-forward was worth doing. A stratified sample across every
+month came back **100% retrievable**, including binned mail over a year old — trash goes to the
+provider's Trash folder and stays there.
+
+*(The first version of that probe reported 0% across every month, including mail from three days
+earlier that had visibly opened in the viewer an hour before. It was parsing `find`'s `--out`
+file as JSON, which is the raw message. A zero from an instrument that never fired, produced
+while measuring for exactly that class of defect — caught only by the contradiction with
+something already seen.)*
+
+Rows with no Message-ID can never be filled this way. That is reported as a permanent hole, not
+a queue.
+
 ## 0.18.1 — a suite that did not run is not a suite that passed
 
 Three suites drive the live dashboard over HTTP. That is the right way to test them — the

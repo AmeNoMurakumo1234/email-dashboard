@@ -506,6 +506,49 @@ def _snippet(msg, limit=400):
     return text[:limit]
 
 
+def full_body(msg, limit=400000):
+    """The readable body - text/html preferred, text/plain otherwise - and no attachments.
+
+    THE BODY IS ALREADY IN HAND. `fetch` pulls BODY.PEEK[] for every message and then throws
+    the whole thing away after taking a 400-character snippet from it. So carrying the body
+    through costs NOTHING extra on the wire: no second round trip, no second session, no
+    change to how much is downloaded.
+
+    That matters more than it sounds, because the store went a year with `body_text` NULL on
+    every single row - which left the sandboxed reader, the image blocking and the tracking-
+    host report reachable only by RE-FETCHING each message on demand. That works while the
+    mail is still in the mailbox and fails silently once it is not, and it was costing a
+    round trip per open for data that had already been downloaded once.
+
+    Attachments are excluded deliberately. The viewer renders the body; carrying a 3 MB PDF
+    into a SQLite column serves nothing and would make the store's size a function of what
+    people email you.
+    """
+    picked = []
+    for want in ("text/html", "text/plain"):
+        for part in msg.walk():
+            if part.get_content_type() != want or part.get_filename():
+                continue
+            if "attachment" in str(part.get("Content-Disposition") or "").lower():
+                continue
+            try:
+                raw = part.get_payload(decode=True)
+            except Exception:
+                continue
+            if not raw:
+                continue
+            picked.append(raw.decode(part.get_content_charset() or "utf-8",
+                                     errors="replace"))
+        if picked:
+            break
+    if not picked:
+        return None
+    text = "\n".join(picked)
+    # A cap, stated rather than silent: a runaway newsletter must not put a megabyte into
+    # every row, and the viewer has nothing useful to do past this length anyway.
+    return text[:limit]
+
+
 def cmd_fetch(args):
     conn, _ = connect(args.account)
     conn.select(args.mailbox, readonly=True)
@@ -560,6 +603,11 @@ def cmd_fetch(args):
         }
         if not args.no_snippets:
             entry["snippet"] = _snippet(msg)
+        if getattr(args, "with_body", False) and not args.no_snippets:
+            # Only when the whole message was actually downloaded. With --no-snippets the
+            # fetch asks for headers alone, so there is no body here to carry - and
+            # returning an empty string would be a claim that the message has none.
+            entry["body_text"] = full_body(msg)
         if getattr(args, "grep", None):
             # Search the BODY inside the bulk walk. Doing this caller-side would mean an
             # IMAP session per message; here the body is already in hand.
@@ -798,6 +846,12 @@ def main():
     f.add_argument("--offset", type=int, default=0, help="skip the N newest matches (for paging)")
     f.add_argument("--uid-range", help="IMAP UID range like 100:2500 (overrides --days; stable under concurrent deletions)")
     f.add_argument("--no-snippets", action="store_true")
+    f.add_argument("--with-body", action="store_true", dest="with_body",
+                   help="carry the readable body through as body_text. Costs NOTHING extra "
+                        "on the wire - fetch already downloads the whole message and throws "
+                        "it away after taking a snippet. Without it the dashboard has to "
+                        "re-fetch every message to open it, which works only while the mail "
+                        "is still in the mailbox.")
     f.add_argument("--with-hosts", action="store_true", dest="with_hosts",
                    help="also return every link host per message (for sender profiling)")
     f.add_argument("--grep", help="regex searched in the BODY; only matching messages are "
