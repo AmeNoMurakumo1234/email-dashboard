@@ -47,6 +47,15 @@ import providers
 import runmode
 import untrusted
 
+# Stored subjects contain whatever a sender typed, and a Windows console defaults to
+# cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(
+    _os.path.abspath(__file__))), "dashboard"))
+from consoleio import safe_console            # noqa: E402
+safe_console()
+
+
 ROOT = Path(__file__).resolve().parent.parent
 # Loaded LAZILY. This used to be read at import time, which made the module unimportable
 # without config - so the test suite could not run on a clean clone, and you had to install

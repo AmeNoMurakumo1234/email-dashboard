@@ -126,7 +126,7 @@ try:
     # Every module server.py imports has to travel, or the temp install fails at import and
     # reports it as eight guard failures. Adding `signin` to server was enough to break this.
     for name in ("server.py", "db.py", "concepts.py", "categorize.py", "ingest.py",
-                 "mailview.py", "signin.py"):
+                 "mailview.py", "signin.py", "consoleio.py"):
         src = ROOT / "dashboard" / name
         if src.exists():
             shutil.copy2(src, Path(tmp) / "dashboard" / name)

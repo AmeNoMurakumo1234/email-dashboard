@@ -44,6 +44,15 @@ from server import (_sender_key, load_protected, protected_hit)          # noqa:
 import db  # noqa: E402
 import untrusted  # noqa: E402
 
+# Stored subjects contain whatever a sender typed, and a Windows console defaults to
+# cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(
+    _os.path.abspath(__file__))), "dashboard"))
+from consoleio import safe_console            # noqa: E402
+safe_console()
+
+
 DB = ROOT / "dashboard" / "email_dashboard.db"
 MAILTOOL = HERE / "mailtool.py"
 

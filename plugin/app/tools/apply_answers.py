@@ -41,6 +41,15 @@ sys.path.insert(0, str(ROOT / "dashboard"))
 
 import db                                                          # noqa: E402
 
+# Stored subjects contain whatever a sender typed, and a Windows console defaults to
+# cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(
+    _os.path.abspath(__file__))), "dashboard"))
+from consoleio import safe_console            # noqa: E402
+safe_console()
+
+
 RULES = ROOT / "rules-and-policies.md"
 START = "<!-- elicited:start -->"
 END = "<!-- elicited:end -->"

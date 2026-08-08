@@ -299,6 +299,127 @@ class TheParserUnderClaims(unittest.TestCase):
         self.assertIn("UNKNOWN", out["coverage"]["note"])
 
 
+class CredentialInFlightIsSeenAtAll(unittest.TestCase):
+    """The class the first version was completely blind to. (F36)
+
+    Every phrase in `_SIGNIN` describes a message REPORTING that a sign-in already happened.
+    None matched a message that IS the means of signing in - a magic link, a one-time code, a
+    verification mail. A store holding fourteen of those classified all fourteen as `other`
+    and the panel reported zero sign-ins, zero anomalies, zero everything.
+
+    And these are the better evidence of the two: a magic link you did not request is the
+    intrusion ATTEMPT, arriving before anyone is in. A sign-in notice arrives after. The panel
+    was discarding exactly the class it most needed to see.
+
+    The subject shapes below are the real ones from the store where this was found.
+    """
+
+    SHAPES = [
+        "Secure link to log in to <service> | 2026-07-06 16:33:05",
+        "Your secure link to <service> is here | 2026-08-07 22:18:42",
+        "Your temporary <service> verification code",
+        "Your temporary <service> login code",
+        "Verify Your Email Address",
+        "[CodeHost] Sudo email verification code",
+        "Your one-time passcode",
+        "Your magic link to sign in",
+    ]
+
+    def test_every_one_is_recognised(self):
+        for s in self.SHAPES:
+            kind, _ = signin.classify(s)
+            self.assertEqual(kind, signin.CREDENTIAL, s)
+
+    def test_the_hardest_one_has_no_service_no_stamp_and_no_verb(self):
+        """Called out by the reporter as the one worth writing a test around: any pattern
+        that catches it WITHOUT catching ordinary marketing mail is the one that matters."""
+        self.assertEqual(signin.classify("Verify Your Email Address")[0], signin.CREDENTIAL)
+
+    def test_ordinary_marketing_is_NOT_swept_up(self):
+        """The control, and the reason the pattern is not simply 'code' or 'link'. A
+        vocabulary that catches everything is as useless as one that catches nothing, and it
+        fails in the direction that buries real findings."""
+        for s in ("Your puzzle isn't easy today",
+                  "Save 20% with code SUMMER",
+                  "Here's your weekly link roundup",
+                  "New features and a link to our blog",
+                  "Verify your shipping address for faster checkout"):
+            self.assertNotEqual(signin.classify(s)[0], signin.CREDENTIAL, s)
+
+    def test_a_sign_in_NOTICE_is_still_a_signin_not_a_credential(self):
+        """The two kinds stay distinct: one reports, the other enables."""
+        self.assertEqual(signin.classify("New sign-in to your account")[0], signin.SIGNIN)
+
+    def test_log_in_to_without_the_word_new(self):
+        """`sign-in to` was in the vocabulary and `log-in to` was not, while `new log-in`
+        required the word "new" - a one-word gap that alone accounted for ten of the
+        fourteen missed messages on the store where this was found.
+
+        The subject deliberately carries NO credential vocabulary. The first version of this
+        test used one that said "link", so the credential pattern answered it and removing
+        the phrase under test changed nothing - a mutation pass caught that the assertion was
+        being satisfied by the wrong rule.
+        """
+        self.assertEqual(signin.classify("Someone logged in to your account")[0],
+                         signin.SIGNIN)
+
+    def test_a_credential_reaches_the_ledger_rather_than_being_dropped(self):
+        out = led([msg("Your temporary verification code",
+                       "Svc <s@svc.example.test>", "2026-08-01")],
+                  baseline=[msg("Your temporary verification code",
+                                "Svc <s@svc.example.test>", "2026-01-01")])
+        self.assertEqual(out["summary"]["credentials"], 1)
+        self.assertEqual(len(out["routine"]) + len(out["anomalies"]), 1)
+
+    def test_an_unrequested_credential_from_a_new_service_escalates(self):
+        """The dangerous case: a magic link for a service never seen. Nobody is in yet."""
+        out = led([msg("Secure link to log in to Newthing",
+                       "Newthing <n@newthing.example.test>", "2026-08-01")],
+                  baseline=[msg("New sign in", "Other <o@other.example.test>", "2026-01-01")])
+        self.assertEqual(len(out["anomalies"]), 1)
+
+
+class AZeroSaysWhichKindOfZeroItIs(unittest.TestCase):
+    """The half that made the blindness dangerous rather than merely incomplete. (F36)
+
+    Coverage reported the reach of the DEVICE PARSER - carefully, with a good caveat - and
+    said nothing about the reach of the CLASSIFIER. So a vocabulary that recognised nothing
+    produced output identical to a mailbox that genuinely had no sign-in activity: well-formed
+    JSON, every field present, careful note attached to the wrong number, answer wrong.
+    """
+
+    def test_recognised_is_reported(self):
+        out = led([msg("New sign in to Svc", "Svc <s@svc.example.test>"),
+                   msg("Quarterly newsletter", "News <n@news.example.test>")])
+        self.assertEqual(out["coverage"]["messages"], 2)
+        self.assertEqual(out["coverage"]["recognised"], 1)
+        self.assertEqual(out["coverage"]["unrecognised"], 1)
+
+    def test_a_blind_vocabulary_is_visible_as_a_low_recognised_count(self):
+        """The exact reported situation: everything returns zero, and the coverage line is
+        the only thing that can tell you why."""
+        rows = [msg("Utterly unclassifiable subject %d" % i,
+                    "X <x@svc.example.test>") for i in range(5)]
+        out = led(rows)
+        self.assertEqual(out["summary"]["anomalies"], 0)
+        self.assertEqual(out["summary"]["routine"], 0)
+        self.assertEqual(out["coverage"]["recognised"], 0,
+                         "a zero with nothing recognised must be distinguishable from a "
+                         "quiet mailbox, and `recognised` is the only field that can do it")
+
+    def test_a_genuinely_quiet_mailbox_reads_differently(self):
+        """The control that gives the field its meaning: understood, and nothing happened."""
+        rows = [msg("Updates to our terms of use", "Svc <s@svc.example.test>")]
+        out = led(rows)
+        self.assertEqual(out["summary"]["anomalies"], 0)
+        self.assertEqual(out["coverage"]["recognised"], 1)
+
+    def test_the_note_explains_how_to_read_a_zero(self):
+        note = led([msg("x", "Svc <s@svc.example.test>")])["coverage"]["note"]
+        self.assertIn("recognised", note)
+        self.assertIn("NOT that nothing happened", note)
+
+
 class NoiseIsSeparatedFromEvents(unittest.TestCase):
 
     def test_a_consent_receipt_is_its_own_bucket(self):

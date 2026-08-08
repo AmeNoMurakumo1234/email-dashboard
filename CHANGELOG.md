@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.19.1 — the classifier that recognised nothing, and said nothing about it
+
+### Fixed — the sign-in ledger was blind to credentials in flight
+
+Every phrase in the sign-in vocabulary described a message **reporting that a sign-in already
+happened**. None matched a message that **is the means of signing in** — a magic link, a
+one-time code, a verification mail. A store holding fourteen authentication messages
+classified all fourteen as `other`, and the panel reported zero sign-ins, zero anomalies, zero
+everything.
+
+And those are the *better* evidence of the two. **A magic link you did not request is the
+intrusion attempt, arriving before anyone is in;** a sign-in notice arrives after. An OTP you
+did not ask for is the same. The panel was discarding exactly the class it most needed.
+
+`credential` is now its own kind rather than folded into `signin`, because the right routine
+treatment differs: one you did request is noise, one you did not is an anomaly with nobody
+signed in yet. One further gap closed on the way: `sign-in to` was in the vocabulary and
+`log-in to` was not, while `new log-in` required the word "new" — a one-word hole that alone
+accounted for ten of the fourteen.
+
+### Fixed — a zero now says which kind of zero it is
+
+This is the half that made the blindness dangerous rather than merely incomplete. Coverage
+reported the reach of the **device parser** — carefully, with a good caveat about UNKNOWN never
+meaning "known" — and said **nothing about the reach of the classifier**. So a vocabulary that
+recognised nothing produced output identical to a mailbox that genuinely had no sign-in
+activity: well-formed JSON, every field present, a careful note attached to the wrong number,
+and a completely wrong answer.
+
+`coverage.recognised` is the field that makes a zero legible. A zero beside a low `recognised`
+count means the vocabulary did not understand this mailbox, **not** that nothing happened —
+and those call for opposite responses. `other` is not a classification; it is the absence of
+one, and counting it as coverage is what let a blind run look complete.
+
+### Fixed — printing a stored subject killed the program on a Windows console
+
+Subjects contain whatever a sender typed; a Windows console defaults to cp1252, which cannot
+encode most emoji. Any entry point that printed one died mid-listing with a
+`UnicodeEncodeError`, on a machine where nothing was wrong with the data or the tool. Measured
+on one store: **170 of its distinct subjects** are not cp1252-encodable.
+
+Reported **twice, against two different files** — the second one written *after* the first
+report was closed. Fixing the file that was named instead of the shape of the defect is how
+the same bug gets reported a third time. So: one helper, applied to every printing entry
+point, and a test that **discovers** entry points rather than listing them. `errors="replace"`
+is the half that matters — a console that cannot render a glyph should print `?` and keep
+going, never abort a listing partway.
+
+### Fixed — the roster inside the file that polices rosters
+
+`test_livecheck.py` hard-coded the suites it checks, and named one the package does not ship.
+On a clean install the assertion ran against a file that does not exist, Python reported a
+missing file, and **that was reported as a failing suite** — the exact conflation 0.18.1
+existed to remove, reproduced one level up inside the tool that enforces the distinction.
+
+Now derived from which suites actually *call* the preflight (the call, not the import — a file
+can import a helper and never use it). The missing suite is also shipped now; its absence was
+an allowlist oversight.
+
 ## 0.19.0 — the body you already downloaded
 
 A store ran for a year with `body_text` NULL on **every row**, and nothing looked wrong. The

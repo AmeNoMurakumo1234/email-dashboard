@@ -34,6 +34,17 @@ from datetime import datetime, timezone
 from email import utils as email_utils
 from email.utils import parsedate_to_datetime
 
+# Stored subjects contain whatever a sender typed, and a Windows console defaults to
+# cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
+try:
+    from consoleio import safe_console
+except ImportError:  # running from another cwd
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from consoleio import safe_console
+safe_console()
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(HERE, "email_dashboard.db")
 TOOL = os.path.join(os.path.dirname(HERE), "tools", "mailtool.py")

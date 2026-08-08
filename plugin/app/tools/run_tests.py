@@ -23,6 +23,15 @@ import subprocess
 import sys
 import time
 
+# Stored subjects contain whatever a sender typed, and a Windows console defaults to
+# cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(
+    _os.path.abspath(__file__))), "dashboard"))
+from consoleio import safe_console            # noqa: E402
+safe_console()
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIRS = ("dashboard", "tools", "plugin")
 

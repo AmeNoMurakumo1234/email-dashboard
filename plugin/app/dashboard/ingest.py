@@ -108,6 +108,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "tools"))
 import untrusted  # noqa: E402
 
+# Stored subjects contain whatever a sender typed, and a Windows console defaults to
+# cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
+try:
+    from consoleio import safe_console
+except ImportError:  # running from another cwd
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from consoleio import safe_console
+safe_console()
+
+
 # Two spellings of "this account is fine" reached the DB - `CONNECTED` (what mailtool doctor
 # emits) and `ok` (what the hand-written run JSON used). The UI only recognised the first, so
 # for four consecutive runs every account rendered as NOT connected. The old view showed

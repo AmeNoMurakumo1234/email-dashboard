@@ -43,6 +43,17 @@ sys.path.insert(0, HERE)
 import db                                                          # noqa: E402
 import server                                                      # noqa: E402
 
+# Stored subjects contain whatever a sender typed, and a Windows console defaults to
+# cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
+try:
+    from consoleio import safe_console
+except ImportError:  # running from another cwd
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from consoleio import safe_console
+safe_console()
+
+
 
 def cmd_list(conn, args):
     rows = list(conn.execute(

@@ -88,6 +88,34 @@ _SIGNIN = re.compile(
         "new sign[- ]?in", "new log[- ]?in", "signed in", "sign[- ]?in to",
         "sign[- ]?in notice", "sign[- ]?in$", "was used to sign in",
         "we noticed a new sign", "account was accessed",
+        # `sign[- ]?in to` was here and `log[- ]?in to` was not, while `new log[- ]?in`
+        # required the word "new" - a one-word gap that alone accounted for ten of the
+        # fourteen missed messages on the store where this was found.
+        "log[- ]?in to", "logged in to",
+    )), re.I)
+
+# CREDENTIAL IN FLIGHT: a magic link, a one-time code, a verification mail. Its own kind,
+# not folded into _SIGNIN, because the right routine treatment differs - a magic link you DID
+# request is noise, and one you did not is an anomaly with nobody signed in yet.
+#
+# The first version of this module had no such category, and the omission was not a gap at the
+# edge. Every phrase in _SIGNIN describes a message REPORTING that a sign-in already happened;
+# none matches a message that IS the means of signing in. So a store holding fourteen
+# authentication messages classified all fourteen as `other` and the panel reported zero
+# sign-ins, zero anomalies, zero everything - while its coverage note spoke confidently about
+# the device parser.
+#
+# And these are the better evidence of the two. A magic link you did not request is the
+# intrusion ATTEMPT, arriving before anyone is in; a sign-in notice arrives after. An OTP you
+# did not ask for is the same. The panel was discarding exactly the class it most needed.
+_CREDENTIAL = re.compile(
+    "|".join((
+        "magic link", "secure link", "sign[- ]?in link", "log[- ]?in link",
+        "link to (log|sign)[- ]?in", "one[- ]?time (code|password|passcode|link)",
+        "verification code", "security code", "login code", "sign[- ]?in code",
+        "access code", "temporary .{0,16}code", "your code is", "code to (log|sign)[- ]?in",
+        "confirm your email", "verify your email", "email verification",
+        "authentication code", "2fa code", "otp",
     )), re.I)
 
 # A receipt for a grant the owner just made. The body says there is nothing to do, and it
@@ -130,6 +158,7 @@ _DEVICE = re.compile(
 
 ANOMALY = "anomaly"
 SIGNIN = "signin"
+CREDENTIAL = "credential"
 CONSENT = "consent"
 POLICY = "policy"
 OTHER = "other"
@@ -196,6 +225,10 @@ def classify(subject, sender=""):
         return ANOMALY, signals
     if _CONSENT.search(s):
         return CONSENT, ["a receipt for access the owner granted"]
+    # BEFORE _SIGNIN, because a magic link's subject often contains "log in to" and the
+    # credential reading is the more specific - and the more useful - one of the two.
+    if _CREDENTIAL.search(s):
+        return CREDENTIAL, []
     if _SIGNIN.search(s):
         return SIGNIN, []
     if _POLICY.search(s):
@@ -255,6 +288,10 @@ def ledger(rows, burst_services=3, burst_days=1, cluster_minutes=15, financial=(
 
     anomalies, routine, consent, policy = [], [], [], []
     parsed_device = 0
+    # How many messages the classifier PLACED. `other` is not a classification, it is
+    # the absence of one, and counting it as coverage is what let a blind vocabulary
+    # report a confident zero.
+    recognised = 0
     by_day = collections.defaultdict(set)
 
     ordered = sorted(rows, key=lambda r: str(r.get("msg_day") or r.get("msg_date") or ""))
@@ -263,6 +300,8 @@ def ledger(rows, burst_services=3, burst_days=1, cluster_minutes=15, financial=(
         service = service_of(r.get("sender"))
         day = str(r.get("msg_day") or r.get("msg_date") or "")[:10]
         kind, signals = classify(subject, r.get("sender"))
+        if kind != OTHER:
+            recognised += 1
         dev = device_of(subject)
         if dev:
             parsed_device += 1
@@ -271,7 +310,7 @@ def ledger(rows, burst_services=3, burst_days=1, cluster_minutes=15, financial=(
         item.update({"service": service, "device": dev, "kind": kind,
                      "reasons": list(signals)})
 
-        if kind in (SIGNIN, ANOMALY):
+        if kind in (SIGNIN, ANOMALY, CREDENTIAL):
             by_day[day].add(service)
             # NOVELTY. With a device signature, novelty is about (service, device). Without
             # one it falls back to the service itself - the first notice ever seen from a
@@ -288,10 +327,10 @@ def ledger(rows, burst_services=3, burst_days=1, cluster_minutes=15, financial=(
             if dev:
                 seen_devices[service].add(dev)
 
-        if kind == ANOMALY or (kind == SIGNIN and item["reasons"]):
+        if kind == ANOMALY or (kind in (SIGNIN, CREDENTIAL) and item["reasons"]):
             item["kind"] = ANOMALY
             anomalies.append(item)
-        elif kind == SIGNIN:
+        elif kind in (SIGNIN, CREDENTIAL):
             routine.append(item)
         elif kind == CONSENT:
             consent.append(item)
@@ -347,15 +386,32 @@ def ledger(rows, burst_services=3, burst_days=1, cluster_minutes=15, financial=(
             "anomalies": len(anomalies),
             "consent": len(consent),
             "policy": len(policy),
+            "credentials": sum(1 for it in routine + anomalies
+                               if it.get("kind") == CREDENTIAL
+                               or classify(it.get("subject") or "")[0] == CREDENTIAL),
         },
-        # NOT MEASURED IS NOT ZERO. Device novelty is only as good as what the provider put
-        # in the subject; stating the coverage is what stops "no unknown devices" being read
-        # as "every device was recognised".
+        # NOT MEASURED IS NOT ZERO - AND THE FIRST VERSION APPLIED THAT TO THE WRONG THING.
+        #
+        # It reported the reach of the DEVICE PARSER, carefully, while saying nothing about
+        # the reach of the CLASSIFIER. So on a store whose subjects the vocabulary did not
+        # recognise, the panel returned zero sign-ins, zero anomalies, zero everything - and
+        # the output was indistinguishable from a mailbox that genuinely had no sign-in
+        # activity. Well-formed JSON, every field present, careful caveat attached to the
+        # wrong number, answer completely wrong. This project's own named failure, inside the
+        # module written to prevent it.
+        #
+        # `recognised` is the number that makes a zero legible: it says whether nothing
+        # HAPPENED or nothing was UNDERSTOOD, and those call for opposite responses.
         "coverage": {
             "messages": total,
+            "recognised": recognised,
+            "unrecognised": total - recognised,
             "device_parsed": parsed_device,
-            "note": ("device signatures come from the subject line only, and most providers "
-                     "do not include one - an unparsed notice is UNKNOWN, never 'known'"),
+            "note": ("`recognised` is how many messages the classifier placed at all. A zero "
+                     "beside a LOW recognised count means the vocabulary did not understand "
+                     "this mailbox, NOT that nothing happened. Device signatures come from "
+                     "the subject line only and most providers omit one - an unparsed notice "
+                     "is UNKNOWN, never 'known'."),
         },
         "bursts": bursts,
     }

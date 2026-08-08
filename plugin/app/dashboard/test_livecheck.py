@@ -28,7 +28,37 @@ sys.path.insert(0, HERE)
 
 import livecheck                                                   # noqa: E402
 
-LIVE_SUITES = ("test_ack.py", "test_sender_rule.py", "test_host_flags.py")
+def live_suites():
+    """Every suite that ACTUALLY calls the preflight - discovered, never listed.
+
+    This was a hard-coded tuple, and it named `test_host_flags.py`, which the plugin package
+    does not ship. So a clean install ran the assertion against a file that does not exist,
+    Python reported a missing file, and this suite reported that as a FAILURE.
+
+    The irony is the point, and it is worth keeping written down: 0.18.1 existed to stop a
+    suite that never executed from being reported as a suite that failed. A hard-coded roster
+    inside the file that polices rosters reproduced exactly that conflation, one level up, in
+    the release about it. `run_tests.py` already discovers rather than lists, for this reason.
+
+    Derived from the call, not the import: a file can import the helper and never call it,
+    and a grep for the import would be satisfied by that.
+    """
+    out = []
+    for name in sorted(os.listdir(HERE)):
+        if not name.startswith("test_") or not name.endswith(".py"):
+            continue
+        if name == os.path.basename(__file__):
+            continue
+        try:
+            src = open(os.path.join(HERE, name), encoding="utf-8").read()
+        except OSError:
+            continue
+        if "require_dashboard(" in src:
+            out.append(name)
+    return tuple(out)
+
+
+LIVE_SUITES = live_suites()
 
 
 def free_port():
@@ -104,6 +134,21 @@ class EveryLiveSuiteRefusesToRunBlind(unittest.TestCase):
         for name in LIVE_SUITES:
             with self.subTest(suite=name):
                 self.run_blind(name)          # a timeout here raises and fails the test
+
+    def test_the_roster_is_not_empty_and_every_file_in_it_exists(self):
+        """The positive control on the discovery, and the exact defect it replaces.
+
+        An empty roster would make every test in this class pass over nothing at all - a
+        green check on zero coverage. And a roster naming a file that is not there produced
+        the original failure: Python reports a missing file, and a missing file is reported
+        as a failing suite.
+        """
+        self.assertTrue(LIVE_SUITES, "no suite was found calling require_dashboard - either "
+                                     "the preflight is gone or the discovery is broken, and "
+                                     "both look identical from here")
+        for name in LIVE_SUITES:
+            self.assertTrue(os.path.isfile(os.path.join(HERE, name)),
+                            "%s is in the roster but not on disk" % name)
 
 
 if __name__ == "__main__":

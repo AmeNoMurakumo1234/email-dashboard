@@ -30,6 +30,17 @@ from datetime import date as _date
 
 import db
 
+# Stored subjects contain whatever a sender typed, and a Windows console defaults to
+# cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
+try:
+    from consoleio import safe_console
+except ImportError:  # running from another cwd
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from consoleio import safe_console
+safe_console()
+
+
 API = "https://store.steampowered.com/api/appdetails?appids={app}&cc={cc}&filters=price_overview"
 STORE = "https://store.steampowered.com/app/{app}/?cc={cc}&l=english"
 UA = "email-dashboard-steam-refresh/1.0 (localhost)"

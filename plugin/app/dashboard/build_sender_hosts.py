@@ -35,6 +35,17 @@ TOOL = os.path.join(os.path.dirname(HERE), "tools", "mailtool.py")
 sys.path.insert(0, HERE)
 from server import _sender_key                                    # noqa: E402
 
+# Stored subjects contain whatever a sender typed, and a Windows console defaults to
+# cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
+try:
+    from consoleio import safe_console
+except ImportError:  # running from another cwd
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from consoleio import safe_console
+safe_console()
+
+
 BOXES = {"gmail": ["INBOX", "[Gmail]/Trash"], "outlook": ["INBOX", "Deleted"]}
 HOST_RE = re.compile(r'https?://([A-Za-z0-9.\-]+)', re.I)
 
