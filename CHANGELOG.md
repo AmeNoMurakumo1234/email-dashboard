@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.19.2 — a web link is a handle, not decoration
+
+`backfill_bodies.py` required a Message-ID and called every other row **a permanent hole**.
+Saying that out loud was the right instinct attached to the wrong arithmetic, which is worse
+than saying nothing — it is a confident claim about what cannot be recovered.
+
+On the install where this was reported, Message-IDs covered under a third of the rows while
+`web_link` covered **all of them**. Every one of those "unreachable" rows was fetchable
+through the identifier its own link already carried.
+
+### Fixed — the fallback, and the corrected definition of a hole
+
+A provider's web link embeds the provider's own message identifier. `handle_of()` prefers the
+Message-ID — it is provider-independent and survives the message moving between folders — and
+falls back to the link. A hole is now **a row with neither**, which is a different number, and
+the tool reports the two sources separately so the claim can be checked rather than trusted.
+
+### The encoding detail, because it fails in the worst possible pattern
+
+`ItemID` in an OWA link is percent-encoded **standard base64** (`/` and `+`). Graph's own `id`
+is **base64URL** (`-` and `_`). Hand the decoded standard form to Graph and a `/` reads as a
+path separator: `ErrorInvalidIdMalformed`. Single-encoding to `%2F` does not survive, because
+it is decoded again before it arrives; only double-encoding gets through, and that is a
+workaround for a problem that disappears if you convert the alphabet instead:
+
+```python
+uid = item_id.replace("/", "-").replace("+", "_")
+```
+
+Roughly one id in twelve contains one of those characters. **A naive version works for the
+first dozen messages and then fails** — it looks like it works, which is the distribution that
+gets shipped. Percent-decoding happens first and the alphabet conversion second; the other
+order rewrites the escape's own characters and yields an id that decodes to nothing.
+
+### Not verified end to end
+
+Every account on the install this was written on is IMAP, and IMAP has no web link — so no row
+in that store has one to test against. The extraction and the conversion are tested against the
+documented shapes and the reported failure; **the fetch that uses them is not**. Stated rather
+than implied: "it should work" and "it was seen to work" are different claims, and only one of
+them has been earned here.
+
+### Also — a safety sentence that had gone stale
+
+The module's docstring said it "only ever calls `find`", which stopped being true when the
+fallback added a second call. Both use `BODY.PEEK`, so the read-only property still holds — but
+a guarantee whose stated *reason* is out of date is worth correcting anyway, because the next
+person to add a call will check the sentence rather than the code.
+
 ## 0.19.1 — the classifier that recognised nothing, and said nothing about it
 
 ### Fixed — the sign-in ledger was blind to credentials in flight

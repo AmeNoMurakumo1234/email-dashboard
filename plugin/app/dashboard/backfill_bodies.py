@@ -27,8 +27,12 @@ the better part of an hour. `--limit` and `--account` exist so it can be done in
     python dashboard/backfill_bodies.py --kept-first --limit 200
     python dashboard/backfill_bodies.py --account someone@example.com
 
-READ-ONLY against the mailbox: it sets MAILTOOL_READONLY=1 for every child and only ever
-calls `find`, which uses BODY.PEEK and cannot mark anything read or move anything.
+READ-ONLY against the mailbox: it sets MAILTOOL_READONLY=1 for every child, and calls only
+`find` and `body` - both of which use BODY.PEEK, so neither can mark a message read or move
+it. This sentence used to say "only ever calls `find`", which stopped being true the moment
+the web-link fallback was added: a safety claim whose stated REASON has gone stale is worth
+correcting even when the property still holds, because the next person to add a call will
+check the sentence rather than the code.
 """
 import argparse
 import json
@@ -43,6 +47,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 import db                                                          # noqa: E402
+import weblink                                                     # noqa: E402
 
 # Stored subjects contain whatever a sender typed, and a Windows console defaults to
 # cp1252 - so printing one used to abort the whole listing with a UnicodeEncodeError.
@@ -88,9 +93,18 @@ def readable_body(raw_bytes):
 
 
 def candidates(conn, account=None, kept_first=False, limit=0):
-    """Rows that could be filled: linked, and not already carrying a body."""
-    sql = ("SELECT id, account, message_id, subject, msg_day, disposition FROM messages "
-           "WHERE message_id IS NOT NULL AND message_id != '' "
+    """Rows that could be filled: they have SOME durable handle, and no body yet.
+
+    A Message-ID or a web link. The first version required a Message-ID and called everything
+    else a permanent hole - reported from an install where `message_id` covered under a third
+    of the rows while `web_link` covered all of them. That rule declared most of the
+    store unreachable, when every one of those rows was fetchable through the
+    identifier its web link already carried.
+    """
+    sql = ("SELECT id, account, message_id, web_link, subject, msg_day, disposition "
+           "FROM messages "
+           "WHERE ((message_id IS NOT NULL AND message_id != '') "
+           "       OR (web_link IS NOT NULL AND web_link != '')) "
            "AND (body_text IS NULL OR body_text = '')")
     args = []
     if account:
@@ -114,17 +128,43 @@ def fetch_one(row, timeout=90):
     The verdict comes from `find`'s STDOUT; --out receives the raw message. Keeping those
     two straight is the whole reason the first measurement of this was wrong.
     """
+    handle = weblink.handle_of(row)
+    if not handle:
+        return None, "no Message-ID and no usable id in its web link"
+    kind, value = handle
+
     tmp = os.path.join(tempfile.mkdtemp(), "m.eml")
     env = dict(os.environ, MAILTOOL_READONLY="1", PYTHONIOENCODING="utf-8",
                PYTHONDONTWRITEBYTECODE="1")
+    # `find` searches by Message-ID; `body` reads a known id directly. The web-link route
+    # already HAS the provider's identifier, so searching for it would be a slower way of
+    # asking a question already answered.
+    argv = ([MAILTOOL, "find", "--account", row["account"],
+             "--message-id", value, "--out", tmp] if kind == "message_id"
+            else [MAILTOOL, "body", "--account", row["account"],
+                  "--uid", value, "--out", tmp])
     try:
-        p = subprocess.run(
-            [sys.executable, MAILTOOL, "find", "--account", row["account"],
-             "--message-id", row["message_id"], "--out", tmp],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            env=env, timeout=timeout)
+        p = subprocess.run([sys.executable] + argv, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=env, timeout=timeout)
     except subprocess.TimeoutExpired:
         return None, "timeout"
+    if kind == "item_id":
+        # `body` writes the message and says little; the file is the answer. Kept separate
+        # from the `find` path below rather than pretending both speak the same protocol -
+        # conflating a verdict channel with a payload channel is what made the first
+        # measurement of this whole feature report 0%.
+        if p.returncode != 0 or not os.path.exists(tmp) or not os.path.getsize(tmp):
+            tail = ((p.stderr or "") + (p.stdout or "")).strip().splitlines()
+            return None, ("web-link fetch failed: "
+                          + (tail[-1][:60] if tail else "rc=%d" % p.returncode))
+        try:
+            body = readable_body(open(tmp, "rb").read())
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        return (body, "") if body else (None, "no text or html part (attachment-only?)")
     try:
         verdict = json.loads((p.stdout or "").strip().splitlines()[-1])
     except (ValueError, IndexError, AttributeError):
@@ -164,15 +204,26 @@ def main(argv=None):
     total_linked = conn.execute(
         "SELECT COUNT(*) FROM messages WHERE message_id IS NOT NULL "
         "AND message_id != ''").fetchone()[0]
-    unlinked = conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE message_id IS NULL "
-        "OR message_id = ''").fetchone()[0]
+    by_link = conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE (message_id IS NULL OR message_id = '') "
+        "AND web_link IS NOT NULL AND web_link != ''").fetchone()[0]
+    # A HOLE IS A ROW WITH NEITHER HANDLE, and that is a different number.
+    #
+    # This used to count rows with no Message-ID and call all of them permanently
+    # unreachable. On a store where Message-IDs covered under a third of the rows and web
+    # links covered all of them, that declared two thirds of the mail unrecoverable while
+    # every one of those rows was fetchable through the identifier its link already carried.
+    # The honesty of saying "permanent hole" out loud was right; the arithmetic behind it
+    # was not, which is the more dangerous combination of the two.
+    holes = conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE (message_id IS NULL OR message_id = '') "
+        "AND (web_link IS NULL OR web_link = '')").fetchone()[0]
 
     print("store: %s" % db.DB_PATH)
-    print("%d row(s) to try, of %d linked. %d row(s) have NO Message-ID and can never be "
-          "filled this way - that is a permanent hole, not a queue." % (len(rows),
-                                                                        total_linked,
-                                                                        unlinked))
+    print("%d row(s) to try. Handles available: %d by Message-ID, %d more by web link."
+          % (len(rows), total_linked, by_link))
+    print("%d row(s) have NEITHER a Message-ID nor a web link - those are a permanent hole, "
+          "not a queue." % holes)
     if args.dry_run:
         print("\n(dry run - nothing fetched, nothing written)")
         for r in rows[:10]:
