@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.28.1 — guard the action, not the sender
+
+The attention-path guard added in 0.28.0 was placed at the top of the block, so it fired on
+**every** answer rather than only the suppressing one. One line out of position, and it
+inverted a correct guard three ways:
+
+- **It answered untruthfully.** A request to make somebody *more* visible came back with *"no
+  rule may stop it being surfaced"*. Nothing was trying to stop it.
+- **A no-op answer wrote a line into the rules file.** *"No — leave it as it is"* changes
+  nothing, and it produced a `(REFUSED)` entry in the record of what the owner decided — a
+  refusal logged for a decision nobody was refused. That is a third thing that looks like both
+  halves of the pair 0.26.0 went to the trouble of separating: *your answer changed nothing*
+  and *your answer was lost*.
+- **It blocked the one action that serves the protected list.** Ranking the accountant or the
+  IT lead higher is the guard's own goal expressed through the questions panel, and the guard
+  refused it.
+
+Quieter than all three, and the reason this was worth fixing rather than shrugging at: the
+early return also made the fallthrough unreachable.
+
+```python
+return None            # unclear: do not guess toward hiding things
+```
+
+The most careful line in the function was **dead code for exactly the people it was written to
+protect**, because an ambiguous answer about a protected sender could never get that far.
+
+The check now sits inside the suppressing branch only. `surface it less` is left unguarded as a
+**deliberate** decision rather than a side effect of placement: a collapsed series is still
+surfaced, so it silences nobody, and asking for a chatty protected sender to take one row
+instead of nine is reasonable.
+
+### The test class was right and the matrix had a hole
+
+`TheGuardBindsTheATTENTIONPathToo` covered protected+suppressing and unprotected+either, so
+every case varied both axes together and the empty cell — **protected + non-suppressing** — was
+where the bug lived. The suite was green and the defect untouched. Four cases added, and
+reinstating the old placement now turns six of them red.
+
 ## 0.28.0 — an acknowledgement is engagement, not dismissal
 
 ### Fixed — the panel offered to silence the people you deal with most

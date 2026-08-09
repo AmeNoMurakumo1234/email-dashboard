@@ -181,26 +181,38 @@ def _lines_for(row):
     if kind in ("repeatedly_acknowledged", "engaged_sender"):
         who = qid.split(":", 1)[-1]
         # THE GUARD IS CONSULTED ON THE ATTENTION PATH TOO, not only on the disposal path.
+        # `protected_names` stops the applier BINNING someone's mail; it never stopped an
+        # elicited rule making that sender UNSURFACED, which is the quieter half of the same
+        # outcome. On a field install four of the five senders this question was generated for
+        # were on the protected list.
         #
-        # `protected_names` stops the applier BINNING someone's mail. It never stopped an
-        # elicited rule making that sender UNSURFACED - the quieter half of the same outcome,
-        # since the mail stays in the inbox and the tool simply stops mentioning it. On a field
-        # install four of the five senders this question was generated for were on the
-        # protected list: the accountant, the IT lead and two senior colleagues. One click
-        # would have silenced them, with nothing consulted and nothing warned.
+        # GUARD THE ACTION, NOT THE SENDER. The check sat here at the TOP and therefore fired
+        # on every branch, which inverted a correct guard three ways: it answered a request to
+        # make somebody MORE visible with "no rule may stop it being surfaced", which is false;
+        # it wrote a `(REFUSED)` line into the rules file for "no - leave it as it is", an
+        # answer that changes nothing, putting a refusal in the record of decisions for a
+        # decision nobody was refused; and it blocked the one action that actually serves the
+        # protected list, since ranking the accountant higher is the guard's own goal expressed
+        # through this panel.
         #
-        # The caution below already pointed the right way for an AMBIGUOUS answer. An
-        # unambiguous "stop surfacing it" went straight through, which is the gap.
-        if _is_protected(who):
-            return ["- (REFUSED) `%s` is on your protected list, so no rule may stop it being "
-                    "surfaced. Remove them from the guard first if you really mean it." % who]
+        # It also made the fallthrough below unreachable for protected senders - so the most
+        # careful line in the function, the one that refuses to guess toward hiding people, was
+        # dead code for exactly the people it was written to protect.
         if low.startswith("keep surfacing") or low.startswith("no -"):
             return None
         if low.startswith("yes - rank") or "rank it higher" in low:
             return ["- Rank `%s` higher; I deal with their mail regularly." % who]
+        # DELIBERATELY UNGUARDED, as a decision rather than an accident: a collapsed series is
+        # still surfaced, so it silences nobody, and asking for a chatty protected sender to
+        # take one row instead of nine is a reasonable thing to want. Only outright suppression
+        # is refused below.
         if low.startswith("surface it less"):
             return ["- Surface `%s` as a collapsed series, not one row per message." % who]
         if low.startswith("stop surfacing") or "see less of it" in low or "stop" in low:
+            if _is_protected(who):
+                return ["- (REFUSED) `%s` is on your protected list, so no rule may stop it "
+                        "being surfaced. Remove them from the guard first if you really mean "
+                        "it." % who]
             return ["- Surface `%s` less prominently; I have said I want less of it." % who]
         return None                         # unclear: do not guess toward hiding things
 

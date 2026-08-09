@@ -132,6 +132,45 @@ class TheGuardBindsTheATTENTIONPathToo(unittest.TestCase):
         lines = aa._lines_for(self._row("yes - rank it higher"))
         self.assertIn("Rank `payroll` higher", lines[0])
 
+    # ---- THE EMPTY CELL: protected sender, NON-suppressing answer ----------------------
+    #
+    # The first four cases covered protected+suppressing and unprotected+either, so the matrix
+    # had a hole and the suite stayed green while the guard fired on every branch. That is the
+    # shape worth remembering: a test class can be correctly named, correctly reasoned and
+    # still miss the defect, if every case varies both axes together.
+
+    def test_a_protected_sender_can_still_be_ranked_UP(self):
+        """The guard exists so these people are not missed. Ranking one higher is that goal
+        expressed through this panel, so refusing it inverts the guard."""
+        aa._is_protected = lambda who: True
+        lines = aa._lines_for(self._row("yes - rank it higher"))
+        self.assertIn("Rank `payroll` higher", lines[0])
+        self.assertNotIn("REFUSED", lines[0])
+
+    def test_a_no_op_answer_on_a_protected_sender_writes_NOTHING(self):
+        """"No - leave it as it is" changes nothing, so it must not put a `(REFUSED)` line in
+        the record of what the owner decided. A refusal for a decision nobody was refused is a
+        third thing that looks like both halves of the pair 0.26.0 separated: your answer
+        changed nothing, and your answer was lost."""
+        aa._is_protected = lambda who: True
+        self.assertIsNone(aa._lines_for(self._row("no - leave it as it is")))
+        self.assertIsNone(aa._lines_for(self._row("keep surfacing - I want to see each one")))
+
+    def test_the_do_not_guess_fallthrough_is_REACHABLE_for_a_protected_sender(self):
+        """The most careful line in the function was dead code for exactly the people it was
+        written to protect, because the guard returned before an ambiguous answer could reach
+        it."""
+        aa._is_protected = lambda who: True
+        self.assertIsNone(aa._lines_for(self._row("hmm, not sure really")))
+
+    def test_collapsing_a_protected_sender_is_allowed_ON_PURPOSE(self):
+        """A collapsed series is still surfaced, so it silences nobody. Documented as a
+        decision rather than left as a side effect of where the guard sits."""
+        aa._is_protected = lambda who: True
+        lines = aa._lines_for(self._row("surface it less often"))
+        self.assertIn("collapsed series", lines[0])
+        self.assertNotIn("REFUSED", lines[0])
+
 
 class TheRestOfTheFileSurvives(unittest.TestCase):
 
