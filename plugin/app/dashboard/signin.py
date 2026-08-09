@@ -320,8 +320,35 @@ def ledger(rows, burst_services=3, burst_days=1, cluster_minutes=15, financial=(
                 item["reasons"].append("first security notice ever recorded for this service")
             elif dev and dev not in seen_devices[service]:
                 item["reasons"].append("device never seen before for this service: %s" % dev)
+            # FINANCIAL IS AN AMPLIFIER, NOT A TRIGGER.
+            #
+            # It used to append a reason unconditionally, and anything carrying a reason is
+            # promoted to an anomaly below - so every sign-in to a financial service escalated
+            # forever. Reported from the field: every sign-in in the window escalated and
+            # `routine` stayed at zero, on a paid tool the owner uses daily, from the same
+            # desktop as the week before.
+            #
+            # "Do they take my money" and "is a sign-in here unusual" are different questions
+            # and only the second makes a sign-in worth escalating. A bank is both - money
+            # moves and you sign in rarely. A subscription you pay monthly and use daily is
+            # the first and emphatically not the second.
+            #
+            # What made it a defect rather than a tuning preference: the panel ALREADY HELD
+            # the evidence that these were routine. Prior sign-ins to that same service sat in
+            # the baseline, whose entire stated purpose is to teach the panel what normal
+            # looks like. The novelty rule consulted it and said "not new"; this rule then
+            # overrode that answer without consulting anything. The mechanism built to stop
+            # the panel crying wolf was bypassed by a rule that fired unconditionally - and it
+            # fired on the highest-volume sign-in service in the mailbox, which is the worst
+            # possible place for it.
+            #
+            # So it now RAISES an alarm that already exists and never manufactures one. The
+            # flag is still recorded either way, so a routine line can say "6 routine
+            # sign-ins, 2 to financial services" and an anomaly can be ranked above its peers.
             if service and service in financial:
-                item["reasons"].append("a financial or protected service")
+                item["financial"] = True
+                if item["reasons"]:
+                    item["reasons"].append("and it is a financial or protected service")
             if service:
                 seen_services.add(service)
             if dev:
@@ -389,6 +416,10 @@ def ledger(rows, burst_services=3, burst_days=1, cluster_minutes=15, financial=(
             "credentials": sum(1 for it in routine + anomalies
                                if it.get("kind") == CREDENTIAL
                                or classify(it.get("subject") or "")[0] == CREDENTIAL),
+            # So the one-line summary can say "6 routine sign-ins, 2 to financial services"
+            # without any of them having to shout to get counted.
+            "financial_routine": sum(1 for it in routine if it.get("financial")),
+            "financial_anomalies": sum(1 for it in anomalies if it.get("financial")),
         },
         # NOT MEASURED IS NOT ZERO - AND THE FIRST VERSION APPLIED THAT TO THE WRONG THING.
         #
@@ -407,11 +438,20 @@ def ledger(rows, burst_services=3, burst_days=1, cluster_minutes=15, financial=(
             "recognised": recognised,
             "unrecognised": total - recognised,
             "device_parsed": parsed_device,
+            # THE BASELINE IS THE ONE ARGUMENT THIS PANEL'S HONESTY RESTS ON, and it defaults
+            # to empty - so a caller who omits it gets a wall of "first security notice ever
+            # recorded", which is the exact cry-wolf failure the baseline exists to prevent.
+            # It cannot be made required without breaking callers, so it is REPORTED instead,
+            # for the same reason `recognised` is: a number nobody can see cannot be checked.
+            "baseline": len(baseline or ()),
             "note": ("`recognised` is how many messages the classifier placed at all. A zero "
                      "beside a LOW recognised count means the vocabulary did not understand "
                      "this mailbox, NOT that nothing happened. Device signatures come from "
                      "the subject line only and most providers omit one - an unparsed notice "
-                     "is UNKNOWN, never 'known'."),
+                     "is UNKNOWN, never 'known'. `baseline` is how much older mail taught "
+                     "this panel what normal looks like: at 0, every service reads as "
+                     "first-ever-seen and the anomalies below are novelty artefacts, not "
+                     "findings."),
         },
         "bursts": bursts,
     }

@@ -31,6 +31,7 @@ BASE = os.environ.get("EMAIL_DASHBOARD_BASE") or "http://127.0.0.1:9770"   # ove
 # instead of saying so. A suite that did not run is neither a pass nor a failure.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from livecheck import require_dashboard                              # noqa: E402
+import db                                                            # noqa: E402
 require_dashboard(BASE, 'test_sender_rule.py')
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -72,6 +73,14 @@ def raw_rules():
     with open(RULES, "rb") as f:
         return f.read()
 
+
+# COULD NOT RUN is not FAILED. A tree that was never installed has no rules file and no
+# store, and a FileNotFoundError here reads as a broken clone rather than an uninstalled one.
+if not os.path.exists(RULES) or not db.store_ready():
+    print("COULD NOT RUN - this suite needs an installed tree: a rules file and an "
+          "initialised store.\n                Run plugin/install.ps1 first. These "
+          "assertions did NOT execute.")
+    sys.exit(2)
 
 before = open(RULES, encoding="utf-8").read()
 before_bytes = raw_rules()

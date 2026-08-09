@@ -55,6 +55,7 @@ safe_console()
 
 DB = ROOT / "dashboard" / "email_dashboard.db"
 MAILTOOL = HERE / "mailtool.py"
+JOURNAL = ROOT / "deletion-journal.md"
 
 # Anything ever flagged this way is something the owner was meant to look at. A later run
 # proposing to bin the same sender is exactly the case worth stopping.
@@ -66,35 +67,84 @@ def _history(conn):
 
     Read once. This is the memory the proposal cannot overwrite, and the reason a sender that
     mattered last month cannot be quietly binned this month.
+
+    KEYED TWO WAYS, DELIBERATELY. `hist[key]` is the whole sender; `hist[(key, category)]` is
+    one slice of it. The slice exists because a rule may name (sender, category) - that is the
+    only statement about a high-volume notification address that is actually TRUE - and a
+    guard that can only reason about the whole address cannot enforce a rule written about a
+    slice.
+
+    Reported from the field before this existed: most of the refusals in one sweep were a
+    single tracker address, every one of them refused because a handful of OTHER messages from
+    that address - a human naming the owner - were rightly kept. Their protection was applied
+    to the whole address, so status mail inherited it. Worse, it moved the wrong way under
+    ordinary use: deciding to KEEP some mail from an address silently removed the ability to
+    bin different mail from it, with nothing warning that it had happened.
     """
     hist = {}
-    try:
-        rows = conn.execute(
-            "SELECT sender, disposition, COALESCE(concept,'') concept, "
-            "COALESCE(importance,'') importance FROM messages "
-            "WHERE sender IS NOT NULL AND sender != ''")
-    except sqlite3.Error:
+    # DEGRADE, DO NOT VANISH. An older store has no `category` column, and the first version
+    # of the sliced query let that raise into a bare `except: return {}` - which reads as "this
+    # sender has no history", i.e. nothing is protected. A guard whose memory fails silently
+    # fails OPEN, which is the one direction it must never fail in. So: try the slice, fall
+    # back to the whole sender, and if even that is unreadable say so loudly rather than
+    # returning a confident empty dict.
+    rows, sliced = None, True
+    for sql in (
+        "SELECT sender, disposition, COALESCE(concept,'') concept, "
+        "COALESCE(importance,'') importance, COALESCE(category,'') category "
+        "FROM messages WHERE sender IS NOT NULL AND sender != ''",
+        "SELECT sender, disposition, COALESCE(concept,'') concept, "
+        "COALESCE(importance,'') importance, '' category "
+        "FROM messages WHERE sender IS NOT NULL AND sender != ''",
+    ):
+        try:
+            rows = conn.execute(sql).fetchall()
+            break
+        except sqlite3.Error:
+            sliced = False
+            continue
+    if rows is None:
+        print("\nWARNING: could not read sender history from the store. This guard is now "
+              "working\n         from NO memory of what you have kept - treat every clearance "
+              "below as\n         unverified, and fix the store before applying anything.")
         return hist
-    for sender, disposition, concept, importance in rows:
+    if not sliced:
+        print("note          : this store has no per-message category, so history is judged "
+              "at whole-sender level")
+    for sender, disposition, concept, importance, category in rows:
         key = _sender_key(sender)
         if not key:
             continue
-        h = hist.setdefault(key, {"kept": 0, "trashed": 0, "attention": False,
-                                  "concepts": set()})
-        # An ELSE branch decided what counted as kept, so every disposition that was not the
-        # single string "trashed" became evidence that the sender was worth keeping. On a
-        # read-only or connector install that is every row, because there was no way to
-        # record "I would bin this and cannot" - so the guard refused every sender forever,
-        # and did it with sound-looking reasons. Judged-disposable is now its own thing.
-        if disposition in db.DISPOSABLE:
-            h["trashed"] += 1
-        elif disposition in db.DELIBERATELY_KEPT:
-            h["kept"] += 1
-        if importance in ATTENTION:
-            h["attention"] = True
-        if concept:
-            h["concepts"].add(concept)
+        # Both buckets are accumulated from the same row, so the slice can never claim
+        # evidence the whole sender does not have.
+        targets = [hist.setdefault(key, {"kept": 0, "trashed": 0, "attention": False,
+                                         "concepts": set()})]
+        if category:
+            targets.append(hist.setdefault((key, category),
+                                           {"kept": 0, "trashed": 0, "attention": False,
+                                            "concepts": set()}))
+        for h in targets:
+            _accumulate(h, disposition, importance, concept)
     return hist
+
+
+def _accumulate(h, disposition, importance, concept):
+    """Fold one stored row into one history bucket.
+
+    An ELSE branch used to decide what counted as kept, so every disposition that was not the
+    single string "trashed" became evidence that the sender was worth keeping. On a read-only
+    or connector install that is every row, because there was no way to record "I would bin
+    this and cannot" - so the guard refused every sender forever, and did it with
+    sound-looking reasons. Judged-disposable is now its own thing.
+    """
+    if disposition in db.DISPOSABLE:
+        h["trashed"] += 1
+    elif disposition in db.DELIBERATELY_KEPT:
+        h["kept"] += 1
+    if importance in ATTENTION:
+        h["attention"] = True
+    if concept:
+        h["concepts"].add(concept)
 
 
 def judge(msg, prot, hist):
@@ -102,11 +152,23 @@ def judge(msg, prot, hist):
 
     Reasons are accumulated rather than short-circuited: a report that names one objection
     when three apply invites someone to fix the one and retry.
+
+    SCOPED TO THE SLICE, matching `server.sender_rule_verdict`. Those two functions answer the
+    same question - may this be binned? - and for a while they answered it differently: the
+    dashboard would call a (sender, category) slice rulable with no reservations while this
+    function refused every message in it, in the same store, in the same instant, with no way
+    for a reader to tell which one governed. One concept spelled twice, in the code that
+    decides what gets deleted.
+
+    The narrowing applies ONLY to evidence drawn from history. The protected-NAME check stays
+    at whole-sender level on purpose: if a person is protected, no slice of their mail may be
+    binned one label at a time.
     """
     reasons = []
     sender = msg.get("sender") or msg.get("from") or ""
     key = _sender_key(sender) or ""
     concept = msg.get("concept") or ""
+    category = msg.get("category") or ""
     importance = msg.get("importance") or ""
 
     if protected_hit(prot, sender) or (key and protected_hit(prot, key)):
@@ -120,17 +182,22 @@ def judge(msg, prot, hist):
         # triager's decision. Surface it to a person instead.
         reasons.append("carries injection signals - needs a human look, not a silent bin")
 
-    h = hist.get(key)
+    # The slice when the message carries a category and the store has seen that slice;
+    # the whole sender otherwise. Narrower evidence, not weaker evidence - every check below
+    # is unchanged and simply runs against the smaller set.
+    sliced = bool(category) and (key, category) in hist
+    h = hist.get((key, category)) if sliced else hist.get(key)
+    scope = ("this sender under %r" % category) if sliced else "this sender"
     if h:
         if h["kept"]:
-            reasons.append(f"this sender has {h['kept']} kept or surfaced message(s) on "
+            reasons.append(f"{scope} has {h['kept']} kept or surfaced message(s) on "
                            f"record - not pure noise")
         if h["attention"]:
-            reasons.append("this sender has been flagged as needing attention before")
+            reasons.append(f"{scope} has been flagged as needing attention before")
         hit = h["concepts"] & prot["concepts"]
         if hit:
-            reasons.append("sender has history in a protected category: "
-                           + ", ".join(sorted(hit)))
+            reasons.append("%s has history in a protected category: %s"
+                           % (scope, ", ".join(sorted(hit))))
     return reasons
 
 
@@ -141,6 +208,10 @@ def main():
     ap.add_argument("--apply", action="store_true",
                     help="actually move the survivors to Trash (default: decide only)")
     ap.add_argument("--account", help="limit to one mailbox")
+    ap.add_argument("--emit-cleared", metavar="PATH", dest="emit_cleared",
+                    help="write the guard's cleared set to PATH as JSON and act on nothing. "
+                         "For installs with no IMAP: your client executes exactly this list, "
+                         "then feeds a receipt back with `ingest.py --file receipt.json`.")
     args = ap.parse_args()
 
     with open(args.proposal, encoding="utf-8-sig") as f:
@@ -222,6 +293,16 @@ def main():
         print()
 
     print(f"CLEARED {len(allowed)} of {len(messages)} to trash.")
+
+    if args.emit_cleared:
+        n = emit_cleared(allowed, args.emit_cleared)
+        print(f"\nwrote {n} cleared message(s) to {args.emit_cleared}")
+        print("  Execute exactly that list in your client, then record what actually moved:")
+        print("    python dashboard/ingest.py --file receipt.json")
+        print("    receipt.json = {\"disposed\": [\"<message-id>\", ...]}")
+        print("  Nothing was moved here.")
+        return 1 if refused else 0
+
     if not args.apply:
         print("\n(dry run - nothing moved. Re-run with --apply to act on the cleared set.)")
         return 1 if refused else 0
@@ -256,9 +337,12 @@ def main():
         print(f"  ({skipped} cleared message(s) had no uid/account and were left alone)")
 
     promoted = record_disposals(conn, done_ids)
+    journalled = journal_disposals(allowed, done_ids)
     print(f"\napplied {moved} of {len(messages)} proposed.")
     if promoted:
         print(f"record updated: {promoted} row(s) would_trash -> trashed.")
+    if journalled:
+        print(f"journal updated: {journalled} line(s) appended to {JOURNAL.name}.")
     return 1 if refused else 0
 
 
@@ -278,29 +362,134 @@ def record_disposals(conn, moved):
 
     Only rows this run actually moved, matched on Message-ID, and only ones still sitting at
     `would_trash` - never a row somebody has since re-triaged by hand.
+
+    The UPDATE itself lives in `db.record_disposed`, shared with the receipt path in
+    `ingest.py`. Two files answering "was this binned?" is the drift this project keeps
+    paying for; there is one answer and both callers ask it.
     """
     ids = [mid for _, mid in moved if mid]
     if not conn or not ids:
         return 0
     try:
-        cur = conn.execute(
-            "UPDATE messages SET disposition = 'trashed' "
-            "WHERE disposition = 'would_trash' AND message_id IN (%s)"
-            % ",".join("?" * len(ids)), ids)
-        n = cur.rowcount
-        # The run row counts what was DONE, so it has to move with them or the day's own
-        # numbers disagree with the list underneath.
-        conn.execute(
-            "UPDATE runs SET trashed = trashed + ?, kept = MAX(0, kept - 0) "
-            "WHERE run_date IN (SELECT DISTINCT run_date FROM messages "
-            "WHERE message_id IN (%s))" % ",".join("?" * len(ids)), [n] + ids)
-        conn.commit()
-        return n
+        return db.record_disposed(conn, ids)
     except sqlite3.Error as e:
         # Never fatal: the mail HAS moved, and failing here must not make a successful
         # disposal look like a failed one.
         print(f"  (could not update the record: {type(e).__name__}: {e})")
         return 0
+
+
+def emit_cleared(allowed, path):
+    """Write what the guard CLEARED, so an install that cannot act still gets the verdict.
+
+    `ingest.py` opens with a promise it keeps - BRING YOUR OWN FETCHER, this takes plain JSON
+    and needs no IMAP. There was no counterpart for the ACT half, and no seam either: this
+    program hard-codes one executor and keys on a UID, which is per-folder IMAP state that a
+    connector ingest never produces. So a connector install could propose forever and never
+    dispose - `CLEARED 28 of 133` followed by `applied 0`, the guard reaching a verdict that
+    was unexecutable. The propose/dispose split was half implemented for exactly the
+    population `ingest.py` was written to rescue.
+
+    "Then act in your client" is not the answer, and the reason is the whole point of this
+    program. It earns its keep by being an ORDINARY PROGRAM: it reads no message bodies, calls
+    no model, and re-derives every entitlement from the store before anything moves. Move
+    execution into an AI client and that property is gone - the thing reading attacker-written
+    text becomes the thing deleting mail. This file is the boundary.
+
+    So the model never decides what is deleted here either. It carries out a decision a
+    program already made, and it CANNOT ADD TO THE LIST: anything absent from this file was
+    refused. `message_id` is the key in both directions because it is durable and a UID is
+    not - and because the connector world has nothing else.
+    """
+    out = {
+        "generated_by": "apply_proposal.py --emit-cleared",
+        "note": ("Every message here was cleared by the guard. Execute exactly this list - "
+                 "nothing added. Then send back {\"disposed\": [message_id, ...]} through "
+                 "ingest.py so the store records what actually moved."),
+        "cleared": [{
+            "account": m.get("account"),
+            "message_id": m.get("message_id"),
+            "web_link": m.get("web_link"),
+            "subject": m.get("subject"),
+            "sender": m.get("sender"),
+            # Why it SURVIVED the guard, not why it was proposed - the proposal's own reason
+            # came from the triager and is not what entitles anything.
+            "cleared_because": "no objection from the protected list, the attention flags, "
+                               "the injection labels, or this sender's recorded history",
+        } for m, _why in allowed],
+    }
+    p = Path(path)
+    if p.parent and str(p.parent):
+        p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(out, indent=1, ensure_ascii=False), encoding="utf-8")
+    return len(out["cleared"])
+
+
+def _journal_cell(s):
+    """One table cell: no pipes, no newlines, or the row stops being a row."""
+    return (str(s or "").replace("|", "/").replace("\r", " ").replace("\n", " ").strip() or "-")
+
+
+def journal_disposals(allowed, moved, journal=None, today=None):
+    """Write the deletion-journal line in the SAME call that moved the mail.
+
+    WHY THIS LIVES HERE NOW. On 2026-08-08 I found six messages sitting in Trash with no
+    journal entry at all. Nothing was lost - they were recoverable the whole time and the
+    store had them recorded correctly as `trashed` - but the journal is the promise this lane
+    makes about deletion, and for a night it was not kept.
+
+    The cause was structural, not careless. This program wrote back to the STORE and stopped;
+    appending to the markdown journal was a separate hand-run step in the routine, and an
+    evening session that ended after the disposal never reached it. So the paper trail
+    depended on a human-shaped step happening after a machine-shaped one, which is exactly the
+    kind of coupling that holds until the first time it does not.
+
+    Same shape as `record_disposals` and the same rule: the record and the act must not be
+    able to come apart. Only messages this run actually MOVED are written, matched on
+    Message-ID, so a refusal or a skipped uid never produces a line claiming a deletion that
+    did not happen. Failure direction is deliberate: a missing line is caught by the next
+    run's reconciliation, while a line for mail still in the inbox is a lie in the ledger.
+    """
+    journal = Path(journal) if journal else JOURNAL
+    ids = {mid for _, mid in moved if mid}
+    if not ids:
+        return 0
+    from datetime import date
+    today = today or date.today().isoformat()
+
+    try:
+        existing = journal.read_text(encoding="utf-8") if journal.exists() else ""
+    except OSError as e:
+        print(f"  (could not read the journal: {type(e).__name__}: {e})")
+        return 0
+
+    lines = []
+    for m, _why in allowed:
+        mid = (m.get("message_id") or "").strip()
+        if mid not in ids:
+            continue
+        subject = _journal_cell(m.get("subject"))
+        account = _journal_cell(m.get("account"))
+        # Idempotent: re-running the applier must not double-write a day's line.
+        if f"| {today} | {account} |" in existing and subject in existing:
+            continue
+        lines.append("| %s | %s | %s | %s | %s |" % (
+            today, account, _journal_cell(m.get("sender")), subject,
+            _journal_cell(m.get("reason")) + " [journalled by apply_proposal]"))
+
+    if not lines:
+        return 0
+    try:
+        with journal.open("a", encoding="utf-8") as fh:
+            if existing and not existing.endswith("\n"):
+                fh.write("\n")
+            fh.write("\n".join(lines) + "\n")
+    except OSError as e:
+        # Never fatal, for the same reason record_disposals is not: the mail HAS moved, and
+        # failing to describe it must not make a successful disposal look like a failed one.
+        print(f"  (could not write the journal: {type(e).__name__}: {e})")
+        return 0
+    return len(lines)
 
 
 if __name__ == "__main__":

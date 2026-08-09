@@ -909,7 +909,86 @@ MESSAGE_FIELDS = frozenset((
 ))
 
 RUN_FIELDS = frozenset(("run_date", "notes", "accounts", "messages", "steam_sales",
-                        "acknowledgements"))
+                        "acknowledgements", "disposed"))
+
+
+def store_ready(path=None):
+    """Does a real store exist here - schema and all - or merely a FILE?
+
+    EXISTENCE IS NOT READINESS, and the difference is what makes a fresh clone look broken.
+    `sqlite3.connect()` CREATES an empty file, so any suite or script that connects before the
+    schema exists leaves a 0-byte database behind. The next thing to ask `os.path.exists(db)`
+    then gets True, concludes there is a store, queries a table that was never created, and
+    dies with `no such table: messages` - which reads like a corrupt install rather than one
+    that was simply never installed.
+
+    Measured on a freshly built tree: four suites failed that way, and every one of them was
+    correct code meeting an empty file that an earlier suite had conjured.
+
+    Same shape as the other honesty rules here: an HTTP 200 answers "is something listening",
+    never "is it what you shipped"; a file answers "does a path exist", never "is there
+    anything in it".
+    """
+    p = path or DB_PATH
+    try:
+        if not os.path.exists(p) or os.path.getsize(p) == 0:
+            return False
+        c = sqlite3.connect("file:%s?mode=ro" % p, uri=True)
+        try:
+            return c.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                             "AND name='messages'").fetchone() is not None
+        finally:
+            c.close()
+    except (sqlite3.Error, OSError):
+        return False
+
+
+def record_disposed(conn, message_ids):
+    """Promote rows to `trashed` for mail that has ACTUALLY been disposed of.
+
+    THE ONE IMPLEMENTATION, on purpose. Two callers need it and they used to be two copies
+    waiting to drift: the applier, after it moves mail itself; and `ingest.py`, taking a
+    receipt back from a client that did the moving on an install with no IMAP. "May this be
+    binned / was this binned" answered in two files is the defect this project keeps naming,
+    so it is answered here.
+
+    Only rows sitting at `would_trash` move. A row somebody has since re-triaged by hand is
+    never overwritten by a receipt, and a row already `trashed` is not double-counted - which
+    makes replaying the same receipt harmless.
+
+    Returns how many rows actually moved, so a caller can report what LANDED rather than what
+    it sent. A receipt naming ten messages and moving zero is a real answer and must be
+    visible: it means the store never had them.
+    """
+    ids = [str(m).strip() for m in (message_ids or []) if str(m or "").strip()]
+    if not ids:
+        return 0
+    moved, touched = 0, set()
+    # Chunked: SQLite caps host parameters, and a receipt from a large sweep can exceed it.
+    for i in range(0, len(ids), 400):
+        chunk = ids[i:i + 400]
+        marks = ",".join("?" * len(chunk))
+        for r in conn.execute(
+                "SELECT DISTINCT run_date FROM messages WHERE disposition = 'would_trash' "
+                "AND message_id IN (%s)" % marks, chunk):
+            touched.add(r[0])
+        cur = conn.execute(
+            "UPDATE messages SET disposition = 'trashed' "
+            "WHERE disposition = 'would_trash' AND message_id IN (%s)" % marks, chunk)
+        moved += cur.rowcount or 0
+    # The day's own numbers have to move with the rows, or the run row disagrees with the list
+    # underneath it - which is how a record starts lying quietly. RECOMPUTED from the messages
+    # rather than incremented: an increment is only correct once, so replaying a receipt would
+    # inflate it, and this whole function is meant to be safe to replay.
+    for d in touched:
+        conn.execute(
+            "UPDATE runs SET trashed = (SELECT COUNT(*) FROM messages WHERE run_date = ? "
+            "  AND disposition = 'trashed'), "
+            "kept = (SELECT COUNT(*) FROM messages WHERE run_date = ? "
+            "  AND disposition IN ('kept','surfaced','saved')) "
+            "WHERE run_date = ?", (d, d, d))
+    conn.commit()
+    return moved
 
 ACK_FIELDS = frozenset(("kind", "message_id", "sender", "subject", "account", "note", "on"))
 

@@ -119,14 +119,42 @@ class EVERY_ENTRY_POINT_IS_COVERED(unittest.TestCase):
         "steam_refresh.py": "prints game titles, covered anyway",
     }
 
+    def shipped(self):
+        """The files this package shipped, or None when that is unknowable.
+
+        Written by the exporter as `SHIPPED-FILES.txt`. In a development tree there is no
+        manifest and everything is ours, which is exactly what None means here.
+        """
+        p = os.path.join(ROOT, "SHIPPED-FILES.txt")
+        if not os.path.exists(p):
+            return None
+        with open(p, encoding="utf-8") as f:
+            return {ln.strip() for ln in f if ln.strip() and not ln.startswith("#")}
+
     def test_every_printing_entry_point_calls_safe_console(self):
-        missing = []
+        """Fails loudly on ANY unguarded entry point, including the reader's own scripts -
+        those really would die on a cp1252 console, and silence would not help them.
+
+        But it names whose file each one is. Discovery walks a directory and a user's scripts
+        live in the same directory as the plugin's, so a field install once saw this fail
+        while naming four files that were all the user's own - every shipped file was
+        correctly guarded. A package reporting FAILED over files it does not own and cannot
+        fix is the hard-coded-roster problem from the other side. Loud is still the right
+        default; anonymous is not.
+        """
+        shipped, missing = self.shipped(), []
         for folder, name, src in self.entry_points():
-            if "safe_console" in src:
+            if "safe_console" in src or name in self.EXEMPT:
                 continue
-            if name in self.EXEMPT:
-                continue
-            missing.append("%s/%s" % (folder, name))
+            rel = "%s/%s" % (folder, name)
+            if shipped is None:
+                who = ""
+            elif rel in shipped:
+                who = "   <- shipped by the plugin: please report this"
+            else:
+                who = "   <- YOUR file, not the plugin's: add "
+                who += "`from consoleio import safe_console; safe_console()`"
+            missing.append(rel + who)
         self.assertEqual(missing, [],
                          "these can print stored text and would die on a cp1252 console:\n  "
                          + "\n  ".join(missing))

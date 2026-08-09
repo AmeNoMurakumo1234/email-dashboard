@@ -87,6 +87,16 @@ def rows_for(key):
         conn.close()
 
 
+# COULD NOT RUN is not FAILED, and a tree that was never installed has no store to drive.
+# Exit 2 is the runner's word for "these assertions never executed" - the distinction 0.18.1
+# exists to draw. Tracebacking instead teaches a reader that a correct clone is broken, and a
+# suite expected to fail has stopped being a suite.
+if not db.store_ready():
+    print("COULD NOT RUN - no initialised store here yet. Run plugin/install.ps1 (or one "
+          "sweep) first;\n                this suite drives the live dashboard against a "
+          "real store.")
+    sys.exit(2)
+
 cleanup()
 print("\n1. storing findings")
 
@@ -160,9 +170,25 @@ except urllib.error.HTTPError as e:
 
 print("\n6. the empty state names its own reach")
 d = get("/api/new-hosts")
+# ASSERT ON SHAPE, NEVER ON A NUMBER THE STORE HAPPENED TO CONTAIN.
+#
+# This read `and d["profiled_senders"] > 0`, which tests the OWNER'S DATA rather than the
+# panel. The stated intent - "the empty state names its own reach" - is satisfied by the
+# field being present and honest, and 0 is a perfectly correct answer on an install that has
+# not run build_sender_hosts.py yet. So a correct install failed a correct test.
+#
+# The sibling check on the very next line already had it right: `isinstance(..., int)` with
+# no comparison, in the same block, for the same stated purpose. One field asserted for its
+# type, the field beside it for its value.
+#
+# Third instance of one family (a concept-drift suite that failed once the owner taught it
+# their concept map; a roster hard-coded inside the file that polices rosters; this). The
+# --no-local-config flag catches the first shape and cannot catch this one, because the
+# dependency is not config - it is the database the live server is serving. A suite that fails
+# on a correct install teaches its reader to expect a failure, and a suite expected to fail
+# has stopped being a suite.
 check("reports how many senders have enough history to judge",
-      isinstance(d.get("profiled_senders"), int) and d["profiled_senders"] > 0,
-      str(d.get("profiled_senders")))
+      isinstance(d.get("profiled_senders"), int), str(d.get("profiled_senders")))
 check("reports how many pairings were ever flagged",
       isinstance(d.get("ever_flagged"), int), str(d.get("ever_flagged")))
 

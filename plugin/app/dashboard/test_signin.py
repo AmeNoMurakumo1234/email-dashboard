@@ -119,15 +119,58 @@ class ARoutineSignInGoesQuiet(unittest.TestCase):
         self.assertEqual(len(out["anomalies"]), 1)
         self.assertIn("first security notice", " ".join(out["anomalies"][0]["reasons"]))
 
-    def test_a_financial_service_escalates_even_when_routine(self):
+    def test_a_familiar_financial_service_stays_ROUTINE(self):
+        """The one that can only pass one way, and the test that used to assert the opposite.
+
+        `financial` fired unconditionally and anything carrying a reason is promoted, so every
+        sign-in to a paid service escalated forever. Reported from the field: every sign-in in
+        the window escalated and `routine` stayed at zero, on a paid tool used daily from an
+        unchanged desktop.
+
+        What made it a defect rather than a preference: prior sign-ins to that service were
+        sitting in the baseline. The novelty rule consulted them and said "not new"; this rule
+        overrode that answer without consulting anything.
+        """
+        seen = [msg("Sign-in notice", sender="Retailer <a@retailer.example.test>",
+                    day="2026-0%d-01" % d) for d in (1, 2, 3)]
         out = led([msg("Sign-in notice", sender="Retailer <a@retailer.example.test>",
                        day="2026-08-01")],
-                  baseline=self.base + [msg("Sign-in notice",
-                                            sender="Retailer <a@retailer.example.test>",
-                                            day="2026-01-01")],
-                  financial={"Retailer"})
+                  baseline=self.base + seen, financial={"Retailer"})
+        self.assertEqual(out["anomalies"], [])
+        self.assertEqual(len(out["routine"]), 1)
+        # Still MARKED, so the summary can say "1 routine sign-in, 1 to a financial service".
+        self.assertTrue(out["routine"][0].get("financial"))
+        self.assertEqual(out["summary"]["financial_routine"], 1)
+
+    def test_an_UNFAMILIAR_financial_service_still_escalates_and_says_why(self):
+        """The half of the rule worth keeping: an unexpected bank sign-in must still fire."""
+        out = led([msg("Sign-in notice", sender="Retailer <a@retailer.example.test>",
+                       day="2026-08-01")],
+                  baseline=self.base, financial={"Retailer"})
         self.assertEqual(len(out["anomalies"]), 1)
-        self.assertIn("financial", " ".join(out["anomalies"][0]["reasons"]))
+        why = " ".join(out["anomalies"][0]["reasons"])
+        self.assertIn("first security notice", why)
+        self.assertIn("financial", why)          # amplified, not manufactured
+
+    def test_a_new_device_on_a_financial_service_escalates(self):
+        seen = [msg("New login to Retailer from ChromeDesktop on Windows",
+                    sender="Retailer <a@retailer.example.test>", day="2026-01-0%d" % d)
+                for d in (1, 2)]
+        out = led([msg("New login to Retailer from Safari on iPhone",
+                       sender="Retailer <a@retailer.example.test>", day="2026-08-01")],
+                  baseline=self.base + seen, financial={"Retailer"})
+        self.assertEqual(len(out["anomalies"]), 1)
+        self.assertIn("device never seen before", " ".join(out["anomalies"][0]["reasons"]))
+
+    def test_coverage_reports_how_much_baseline_it_had(self):
+        """`baseline` defaults to empty, and at 0 every service reads as first-ever-seen - so
+        the anomalies are novelty artefacts rather than findings. A reader cannot tell the
+        difference unless the number is on the page."""
+        out = led([msg("Sign-in notice", sender="Retailer <a@retailer.example.test>")])
+        self.assertEqual(out["coverage"]["baseline"], 0)
+        out2 = led([msg("Sign-in notice", sender="Retailer <a@retailer.example.test>")],
+                   baseline=self.base)
+        self.assertEqual(out2["coverage"]["baseline"], len(self.base))
 
     def test_the_baseline_is_never_reported_on(self):
         """Learn from the past, judge only the window. Without this split the first run

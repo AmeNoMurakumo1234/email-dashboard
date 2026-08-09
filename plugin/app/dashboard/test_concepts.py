@@ -14,6 +14,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import concepts as C
+import db as _db
 
 # This file is honestly two things: unit assertions about the SHIPPED map, which hold on any
 # machine, and a health check on THIS install - does your local map cover the labels your own
@@ -111,7 +112,15 @@ DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "email_dashboard.d
 if LOCAL_IGNORED:
     print("  SKIP live-DB coverage - the local map was stripped, so every personal label "
           "would report UNMAPPED and blame the install for the flag.")
-elif os.path.exists(DB):
+elif not _db.store_ready(DB):
+    # EXISTENCE IS NOT READINESS. `sqlite3.connect()` creates an empty file, so an earlier
+    # suite connecting before the schema exists leaves a 0-byte database behind - and
+    # `os.path.exists` then says True about a store that has no tables. The query dies with
+    # `no such table: messages`, which reads as a corrupt install rather than one that was
+    # simply never installed.
+    print("  SKIP live-DB coverage - no initialised store here yet (run install.ps1, or a "
+          "sweep, first). Not reported as a pass.")
+elif True:
     import sqlite3
     conn = sqlite3.connect(DB)
     labels = [r[0] for r in conn.execute("SELECT DISTINCT category FROM messages")]

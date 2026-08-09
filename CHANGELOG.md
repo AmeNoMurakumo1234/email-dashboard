@@ -1,5 +1,224 @@
 # Changelog
 
+## 0.24.0 — existence is not readiness, so a fresh clone stops looking broken
+
+Found by doing the thing a downloader does: build the plugin, and run the suite before
+installing anything. **Four suites failed**, and every one of them was correct code meeting a
+tree that had simply never been installed.
+
+### Fixed — an empty file is not a store
+
+`sqlite3.connect()` **creates** the file it cannot find. So a suite that connects before the
+schema exists leaves a **0-byte database** behind, and the next thing to ask
+`os.path.exists(db)` gets `True`, concludes there is a store, queries a table nobody ever
+created, and dies with `no such table: messages`.
+
+That reads like a **corrupt install**. It is an **absent** one. The two call for opposite
+responses, which is the whole reason this project keeps separating *nothing happened* from
+*nothing was measured*.
+
+`db.store_ready()` now answers the real question — file present, non-empty, and the schema
+actually there — and it is one implementation rather than a copy in each suite. Same family as
+the honesty rules already here: an HTTP 200 answers *is something listening*, never *is it what
+you shipped*; a path answers *does this exist*, never *is there anything in it*.
+
+### Fixed — the last three suites that failed on a correct install
+
+The runner has had a **`COULD NOT RUN`** state since 0.18.1, precisely so a suite that never
+executed stops being reported as a suite that failed. Three suites that need an installed tree
+were not using it and tracebacked instead:
+
+- `test_concepts` skips its live-DB coverage section and says why;
+- `test_host_flags` and `test_sender_rule` exit 2 with a plain sentence naming what is missing
+  and how to get it (`install.ps1`, or one sweep).
+
+**On a freshly built tree the suite now reports 0 failures and 2 `COULD NOT RUN`**, instead of
+4 failures. The exit code stays non-zero, deliberately: a suite that did not run is not a pass,
+and *not measured is not zero*.
+
+This is the fourth instance of one family — a suite depending on data the reader has not
+created yet. The earlier cure (`--no-local-config`) reaches the **config** shape and cannot
+reach this one, because the dependency was the **database**. A suite that fails on a correct
+install teaches its reader to expect a failure, and a suite expected to fail has stopped being
+a suite.
+
+## 0.23.0 — a paid tool you sign into daily is not an alarm
+
+### Fixed — `financial` is now an amplifier, never a trigger
+
+The rule appended its reason unconditionally, and anything carrying a reason is promoted to an
+anomaly. So **every sign-in to a financial service escalated, forever.** Reported from the
+field: every sign-in in the window escalated and `routine` stayed at **zero** — on a paid tool
+used daily, from an unchanged desktop.
+
+*"Do they take my money"* and *"is a sign-in here unusual"* are different questions, and only
+the second one makes a sign-in worth escalating. A bank is both: money moves, and you sign in
+rarely, so an unexpected notice is genuinely information. A subscription you pay monthly and
+use constantly is the first and emphatically **not** the second.
+
+What made it a defect rather than a tuning preference: **the panel already held the evidence
+that these were routine.** Prior sign-ins to that service were sitting in the baseline, whose
+entire stated purpose is to teach the panel what normal looks like. The novelty rule consulted
+it and said *not new*; this rule then overrode that answer without consulting anything. The
+mechanism built to stop the panel crying wolf was bypassed by a rule that fired
+unconditionally — and it fired on the highest-volume sign-in service in the mailbox, which is
+the worst possible place for it.
+
+It now **raises an alarm that already exists and never manufactures one**:
+
+- a first-ever sign-in to a financial service → anomaly, and it says the service is financial;
+- an unrecognised device on a financial service → anomaly;
+- an ordinary sign-in to a familiar financial service → **routine**, still marked, so a summary
+  can say *"6 routine sign-ins, 2 to financial services"* without any of them having to shout.
+
+`summary` gains `financial_routine` and `financial_anomalies`. The test that asserted the old
+behaviour is replaced by one that can only pass one way.
+
+### Fixed — `coverage` reports how much baseline it had
+
+`baseline` defaults to empty, and at zero every service reads as first-ever-seen, so the
+anomalies are novelty artefacts rather than findings. It cannot be made required without
+breaking callers, so it is **reported** — the same cure, for the same reason, as the
+classifier-reach number added in 0.19.1. A figure nobody can see cannot be checked.
+
+### Fixed — a test asserted on your data, so a correct install failed a correct test
+
+`test_host_flags` demanded `profiled_senders > 0` from the live store. Zero is the **right**
+answer on an install that has not built sender profiles yet, and the stated intent — *the empty
+state names its own reach* — is satisfied by the field being present and honest. That is
+exactly how the sibling assertion on the very next line was already written: type, not value.
+
+Third instance of one family, and worth naming because the earlier cure does not reach it:
+`--no-local-config` catches a suite that depends on **config**, and this one depended on **the
+database the live server is serving**. Swept the other live suites; their count conditions are
+fixture *selection* with a loud unproven path, which is the correct pattern — so this is one
+instance, not three.
+
+### Changed — the encoding test now says whose file it found
+
+`test_console_encoding` discovers printing entry points rather than listing them, which is
+right: a hard-coded roster is how that bug got reported twice. But discovery walks a directory,
+and your own scripts live in the same directory as the plugin's — so a field install saw it
+fail while naming four files that were all the reader's own, while every shipped file was
+correctly guarded.
+
+Failing loudly stays the default, because those scripts really would die on a cp1252 console
+and silence would not help. What changes is that the build now records what it shipped
+(`app/SHIPPED-FILES.txt`) and the failure names each file as **the plugin's problem** or
+**yours**, with the one-line fix for yours. A package reporting `FAILED` over files it does not
+own is the hard-coded-roster defect from the other side.
+
+## 0.22.0 — the guard reasons about the slice, and a connector install can finally dispose
+
+### Fixed — two implementations of one guard, and only one knew about categories
+
+0.14.0 taught `sender_rule_verdict` that a rule may name **(sender, category)** — the only
+statement about a high-volume notification address that is actually true. `apply_proposal.judge()`
+is a separate implementation in a different file, and it kept keying history on the **sender
+alone**. So one component called a slice rulable with no reservations while the other refused
+every message in it: same store, same sender, same instant, and no way for a reader to tell
+which one governed.
+
+Reported from the field: most of the refusals in one sweep were a single notification address,
+every one refused because a handful of **other** messages from it — a human naming the owner —
+were rightly kept. Those should be protected. Their protection was applied to the whole
+address, so status mail inherited it.
+
+**The direction is what makes it serious.** Deciding to *keep* some mail from an address
+silently removed the ability to *bin* different mail from it. Nothing warned; the others stayed
+labelled disposable and became permanently refused, because the guard's evidence about them was
+really evidence about their neighbours. Silent, and in the direction of doing nothing, which is
+the direction nobody investigates.
+
+History is now keyed both ways, and `judge()` reads the slice when the message carries a
+category the store has actually seen, the whole sender otherwise. **Narrower evidence, not
+weaker evidence:**
+
+- a slice with any deliberately-kept mail is still refused, and the refusal now *names the
+  slice it judged* rather than saying "this sender";
+- a label the store has never recorded falls back to the whole sender — absence of evidence is
+  never read as a clean slice, or any new label would be a way past the guard;
+- the protected-**name** check stays at whole-sender level, so a protected person never becomes
+  binnable one label at a time.
+
+### Fixed — a guard whose memory failed, failed open
+
+Found while making the change above, and worse than it: the sliced query raises on a store with
+no `category` column, and the bare `except` turned that into an **empty history** — which reads
+as *nothing is protected*. Every refusal resting on kept mail silently stopped firing, and the
+output looked like a healthy guard clearing mail. It now degrades to whole-sender, and if it
+cannot read history at all it says so loudly instead of returning a confident empty dict.
+
+### Added — `--emit-cleared`, so an install with no IMAP can act on the verdict
+
+`ingest.py` opens with a promise and keeps it: **bring your own fetcher**, this takes plain JSON
+and needs no IMAP. There was no counterpart for the *acting* half. This program hard-codes one
+executor and keys on a **UID** — per-folder IMAP state a connector ingest never produces — so
+the guard reached a verdict and then nothing moved. The propose/dispose split was half
+implemented for exactly the population `ingest.py` was written to rescue.
+
+*"Then act in your client"* is not the answer, and the reason is the whole point of the split.
+`apply_proposal` earns its keep by being an **ordinary program**: it reads no message bodies,
+calls no model, and re-derives every entitlement from the store before anything moves. Move
+execution into an AI client and that property is gone — the thing reading attacker-written text
+becomes the thing deleting mail.
+
+```
+python tools/apply_proposal.py run.json --emit-cleared cleared.json
+```
+
+writes what the guard cleared and nothing else — account, `message_id`, `web_link`, subject.
+Your client executes exactly that list; **the model never decides what is deleted**, it carries
+out a decision a program already made, and it cannot add to the list because anything absent
+from the file was refused. Then the receipt closes the loop:
+
+```
+python dashboard/ingest.py --file receipt.json     # {"disposed": ["<message-id>", ...]}
+```
+
+so the store records `trashed` for what actually moved instead of leaving `would_trash`
+standing on mail that is already gone. `trashed` is accepted as a spelling too, but only when
+it is a list — a run JSON can legitimately carry `trashed` as a count, and silently reading a
+number as a receipt would be worse than not supporting the spelling.
+
+The receipt reports **what landed, not what was named**: a receipt naming ten and moving zero
+means the store never had them, and that has to be visible rather than reading as success. It
+never overwrites deliberately-kept mail, and replaying it is harmless.
+
+The promote-to-`trashed` update now has **one implementation** (`db.record_disposed`), shared by
+the applier and the receipt. Two files answering *"was this binned?"* is the same drift this
+release opens by fixing.
+
+## 0.21.0 — the disposer writes the journal it owes
+
+Found by reading the paper trail rather than the code: six messages sitting in Trash with **no
+line in the deletion journal**. Nothing was destroyed — Trash is recoverable and the store had
+all six recorded correctly as `trashed` — but *everything is journaled* is the promise this tool
+makes about deletion, and for a night it was not kept.
+
+The cause was structural rather than careless. `apply_proposal` wrote back to the **store** and
+stopped; appending the journal line was a separate hand-run step in the operator's routine, and
+a session that ended right after the disposal never reached it. **A paper trail that depends on
+a human-shaped step following a machine-shaped one holds right up until the first time it does
+not** — and it fails silently, because neither half is wrong on its own.
+
+`journal_disposals()` now appends the line in the same call that moves the mail. The fix is
+subtraction of the coupling, not more diligence: not *remember to journal*, but **cannot move
+without journalling**.
+
+Three things it deliberately does:
+
+- **Only messages actually moved get a line.** A guard refusal never produces one. A ledger
+  entry claiming a deletion that did not happen is far worse than a missing one — the missing
+  one is caught by the next reconciliation, the false one is believed forever.
+- **Escapes what a sender typed.** A pipe or a newline in a subject would otherwise split the
+  row and stop the table parsing as a table.
+- **Never turns a bookkeeping failure into a disposal failure**, for the same reason 0.20.0
+  does not: the mail has already moved.
+
+Re-running the applier does not double-write. The guard test was mutation-checked rather than
+assumed — flipping the moved-set filter turns it red.
+
 ## 0.20.0 — the disposer records what it disposed
 
 Found by using the tool rather than testing it: run a sweep, apply the cleared set, then read

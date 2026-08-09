@@ -142,6 +142,24 @@ def normalize_status(raw):
     return "CONNECTED" if s.lower() in _STATUS_OK else s
 
 
+def _receipt_ids(data):
+    """Message-IDs from a receipt payload, or None if this is not a receipt.
+
+    `disposed` is the canonical spelling, matching the propose/DISPOSE vocabulary the rest of
+    the tool uses. `trashed` is accepted too, but ONLY when it is a list - a run JSON can
+    legitimately carry `trashed` as a count, and quietly reading a number as a receipt would
+    be worse than not supporting the spelling at all. Two names for one thing is a real cost,
+    so the alternative is accepted deliberately and named here rather than left to be
+    discovered: whoever writes the receipt is writing it by hand, and a receipt that silently
+    does nothing is the exact failure this seam exists to close.
+    """
+    for key in ("disposed", "trashed"):
+        v = data.get(key)
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x or "").strip()]
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description="Ingest a daily run into the dashboard DB")
     ap.add_argument("--file", help="path to run JSON (otherwise read stdin)")
@@ -165,6 +183,29 @@ def main():
 
     raw = open(args.file, encoding="utf-8").read() if args.file else sys.stdin.read()
     data = json.loads(raw)
+
+    # A RECEIPT: what a client ACTUALLY disposed of, coming back so the store stops saying
+    # `would_trash` about mail that is already gone.
+    #
+    # This is the other half of BRING YOUR OWN FETCHER. An install with no IMAP can now be
+    # told what the guard cleared (`apply_proposal.py --emit-cleared`), execute exactly that
+    # list itself, and report back - so the propose/dispose split works end to end without a
+    # UID, and without the model ever deciding what gets deleted. Without this the record
+    # drifts from the mailbox silently, and silent drift has to be reconciled by hand.
+    disposed = _receipt_ids(data)
+    if disposed is not None and not data.get("messages") and "run_date" not in data:
+        conn = db.connect()
+        moved = db.record_disposed(conn, disposed)
+        # What LANDED, not what was sent. A receipt naming ten and moving zero means the store
+        # never had them, and that has to be visible rather than reading as success.
+        print("receipt %d of %d named message(s) moved would_trash -> trashed"
+              % (moved, len(disposed)))
+        if moved < len(disposed):
+            print("        %d were not found at `would_trash` - already recorded, re-triaged "
+                  "by hand, or never in this store" % (len(disposed) - moved))
+        print(json.dumps({"ok": True, "mode": "receipt", "named": len(disposed),
+                          "disposed": moved}))
+        return 0
 
     run_date = data["run_date"]
     accounts = data.get("accounts", [])
