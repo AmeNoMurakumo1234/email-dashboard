@@ -1343,6 +1343,7 @@ async function loadFeatures() {
   try {
     const data = await get("/api/features");
     features = Object.assign(features, data.panels || {});
+    showVersion(data.version, data.started);
   } catch (e) {
     // Unreachable config means every OPTIONAL panel stays off. Nothing here is load-bearing,
     // so the harmless answer is the right one.
@@ -1355,6 +1356,34 @@ async function loadFeatures() {
     ui.view = "trash";
     persistUI();
   }
+}
+
+// THE VERSION THE RUNNING PROCESS REPORTS, beside the title.
+//
+// It answers one question at a glance: is the board I am looking at the code I last shipped?
+// The number comes from the SERVER, imported when that process started - so a server left
+// running across an edit keeps showing the old version, which is exactly the tell. Reading it
+// from anything the page itself carries would defeat the purpose: static files are served per
+// request, so a stale process would hand you a fresh number and look healthy.
+//
+// Deliberately quiet: it is a reference, not news. The start time rides in the tooltip rather
+// than on the page, because a timestamp that predates your last edit is the confirming detail
+// once you already suspect something, not a thing worth spending header space on.
+function showVersion(version, started) {
+  const h1 = document.querySelector("h1");
+  if (!h1 || !version) return;
+  let el = document.getElementById("appVersion");
+  if (!el) {
+    el = document.createElement("span");
+    el.id = "appVersion";
+    el.className = "app-version";
+    h1.appendChild(el);
+  }
+  el.textContent = "v" + version;
+  el.title = started
+    ? `serving v${version}, running since ${started.replace("T", " ")}\n` +
+      `If that start time is older than your last edit, this process is stale - restart it.`
+    : `serving v${version}`;
 }
 
 // ---------- first run: what still needs doing, and how to do it ----------

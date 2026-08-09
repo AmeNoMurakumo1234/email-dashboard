@@ -21,6 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import concepts
+from version import VERSION
+
+# Stamped ONCE, at import, deliberately. Paired with VERSION it answers "how long has this
+# exact code been serving?" - and a start time that predates your last edit is the tell that
+# the process is stale, whatever the files on disk say.
+STARTED_AT = datetime.now().replace(microsecond=0).isoformat()
 import db
 import mailview
 import signin
@@ -1095,7 +1101,12 @@ def api_features(conn, q):
         pass
     except Exception as e:
         panels["_error"] = "%s: %s" % (type(e).__name__, e)
-    return {"panels": panels}
+    # THE VERSION OF THE CODE THIS PROCESS IS ACTUALLY RUNNING, which is a different question
+    # from what is on disk and is the one worth answering. `version` was imported when this
+    # process started, so a server left running across an edit keeps reporting the OLD number
+    # while the repo has moved on - and seeing that beside the title is how you catch a stale
+    # server at a glance instead of wondering why a shipped change never appeared.
+    return {"panels": panels, "version": VERSION, "started": STARTED_AT}
 
 
 def api_setup(conn, q):

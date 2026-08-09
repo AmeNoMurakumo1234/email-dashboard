@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.25.0 — the board tells you which version it is running
+
+Asked for directly: *show the version next to the title so I can tell at a glance whether the
+board being served is the right one.* It sits beside the heading as a quiet pill — **`v0.25.0`**.
+
+**The number comes from the running process, and that is the entire point.** The failure this
+catches is a server still executing code from before your last edit — a dashboard was once
+found serving a full day of stale code: the process had started the previous evening, the files
+it served were edited later that night, nobody restarted it, and a shipped feature simply never
+reached the page. The uptime check said green throughout, because HTTP 200 answers *is
+something listening*, never *is it what you shipped*.
+
+So the version is imported when the process starts and served from memory via `/api/features`.
+A stale server keeps reporting its **old** version while the repo has moved on, and that
+mismatch is visible without opening anything. Baking the number into the HTML would have
+defeated it: static files are served per request, so a stale process would hand you a fresh
+version and look perfectly healthy.
+
+Hovering gives the process start time and the rule for reading it: *if that is older than your
+last edit, this process is stale — restart it.*
+
+`dashboard/version.py` is now the single place the version is written down, and the exporter
+**reads** it rather than declaring its own copy. Two spellings of one version is the drift this
+project keeps paying for.
+
+### Fixed — a test manifest that had gone stale twice
+
+The separation suite copied a hand-kept list of modules into a temp install, and adding a new
+module to `server.py` broke it — once for `signin`, again for `version`. Both times the symptom
+was a wall of confident guard failures that had nothing to do with the guard. It now derives
+the set (every non-test module in the package) instead of naming it. A list of somebody else's
+imports cannot stay correct.
+
 ## 0.24.0 — existence is not readiness, so a fresh clone stops looking broken
 
 Found by doing the thing a downloader does: build the plugin, and run the suite before

@@ -56,6 +56,7 @@ dashboard/test_sender_rule.py
 dashboard/test_signin.py
 dashboard/test_stored_body.py
 dashboard/test_weblink.py
+dashboard/version.py
 dashboard/weblink.py
 rules-and-policies.example.md
 tools/apply_answers.py

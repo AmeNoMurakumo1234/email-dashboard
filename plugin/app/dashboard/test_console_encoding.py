@@ -88,7 +88,8 @@ class EVERY_ENTRY_POINT_IS_COVERED(unittest.TestCase):
                     continue
                 p = os.path.join(d, name)
                 try:
-                    src = open(p, encoding="utf-8").read()
+                    with open(p, encoding="utf-8") as fh:
+                        src = fh.read()
                 except OSError:
                     continue
                 if '__main__' not in src or "print(" not in src:

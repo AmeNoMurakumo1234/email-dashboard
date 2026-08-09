@@ -124,9 +124,15 @@ try:
     (Path(tmp) / "config").mkdir()
     (Path(tmp) / "tools").mkdir()
     # Every module server.py imports has to travel, or the temp install fails at import and
-    # reports it as eight guard failures. Adding `signin` to server was enough to break this.
-    for name in ("server.py", "db.py", "concepts.py", "categorize.py", "ingest.py",
-                 "mailview.py", "signin.py", "consoleio.py"):
+    # reports it as guard failures rather than as a missing file.
+    #
+    # DERIVED, NOT LISTED. This was a hand-kept roster and it went stale twice - adding
+    # `signin` broke it once, adding `version` broke it again - and each time the symptom was
+    # a wall of confident guard failures that had nothing to do with the guard. A list of
+    # somebody else's imports cannot stay correct; every non-test module in the package
+    # travels instead, which costs a few kilobytes of copying and cannot go out of date.
+    for name in sorted(p.name for p in (ROOT / "dashboard").glob("*.py")
+                       if not p.name.startswith("test_")):
         src = ROOT / "dashboard" / name
         if src.exists():
             shutil.copy2(src, Path(tmp) / "dashboard" / name)

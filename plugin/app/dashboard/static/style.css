@@ -38,6 +38,19 @@ header {
 }
 h1 { font-size: 20px; margin: 0; }
 
+/* THE RUNNING VERSION, beside the title. Quiet on purpose - it is a reference you glance at
+   when a change seems missing, not something competing with the day's numbers. Monospace so
+   two versions can be compared digit by digit, and baseline-aligned so it reads as part of
+   the title rather than as a separate control. */
+.app-version {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px; font-weight: 600; letter-spacing: .02em;
+  color: var(--muted); background: var(--chip-bg, rgba(127,127,127,.14));
+  border: 1px solid var(--chip-border, rgba(127,127,127,.28));
+  border-radius: 999px; padding: 1px 7px; margin-left: 9px;
+  vertical-align: 2px; white-space: nowrap; cursor: help;
+}
+
 /* WHICH DAY AM I LOOKING AT. This was 13px grey text saying "showing run for 2026-08-06",
    which is the one fact every number on the page depends on and was the quietest thing in
    the header. Now the date itself carries the weight, with a tag saying whether it is the
