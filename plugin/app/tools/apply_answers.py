@@ -84,6 +84,28 @@ PREAMBLE = [
 ]
 
 
+def _is_protected(who):
+    """Is this sender key on the guard list? Errs toward YES.
+
+    Deliberately generous and deliberately local. A false positive costs one refused rule with
+    a message saying exactly how to proceed; a false negative silences somebody the owner said
+    must never be missed. Those are not the same mistake, so the matching leans the cheap way.
+
+    Never raises: an unreadable guard is treated as protecting nothing here, because the caller
+    already refuses to do anything at all when the guard is unconfigured.
+    """
+    try:
+        sys.path.insert(0, str(ROOT / "dashboard"))
+        from server import load_protected                             # noqa: PLC0415
+        names = load_protected().get("names") or []
+    except Exception:                                                 # noqa: BLE001
+        return False
+    low = (who or "").strip().lower()
+    if not low:
+        return False
+    return any(n and (n.lower() in low or low in n.lower()) for n in names)
+
+
 def _lines_for(row):
     """The rule text an answer implies, or None if the answer implies no rule.
 
@@ -156,14 +178,30 @@ def _lines_for(row):
         # mail the person asked to see.
         return None
 
-    if kind == "repeatedly_acknowledged":
+    if kind in ("repeatedly_acknowledged", "engaged_sender"):
         who = qid.split(":", 1)[-1]
-        if low.startswith("keep surfacing"):
+        # THE GUARD IS CONSULTED ON THE ATTENTION PATH TOO, not only on the disposal path.
+        #
+        # `protected_names` stops the applier BINNING someone's mail. It never stopped an
+        # elicited rule making that sender UNSURFACED - the quieter half of the same outcome,
+        # since the mail stays in the inbox and the tool simply stops mentioning it. On a field
+        # install four of the five senders this question was generated for were on the
+        # protected list: the accountant, the IT lead and two senior colleagues. One click
+        # would have silenced them, with nothing consulted and nothing warned.
+        #
+        # The caution below already pointed the right way for an AMBIGUOUS answer. An
+        # unambiguous "stop surfacing it" went straight through, which is the gap.
+        if _is_protected(who):
+            return ["- (REFUSED) `%s` is on your protected list, so no rule may stop it being "
+                    "surfaced. Remove them from the guard first if you really mean it." % who]
+        if low.startswith("keep surfacing") or low.startswith("no -"):
             return None
+        if low.startswith("yes - rank") or "rank it higher" in low:
+            return ["- Rank `%s` higher; I deal with their mail regularly." % who]
         if low.startswith("surface it less"):
             return ["- Surface `%s` as a collapsed series, not one row per message." % who]
-        if low.startswith("stop surfacing") or "stop" in low:
-            return ["- Stop surfacing `%s`; I have acknowledged it repeatedly." % who]
+        if low.startswith("stop surfacing") or "see less of it" in low or "stop" in low:
+            return ["- Surface `%s` less prominently; I have said I want less of it." % who]
         return None                         # unclear: do not guess toward hiding things
 
     if kind == "mailbox_role":

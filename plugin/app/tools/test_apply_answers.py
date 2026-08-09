@@ -88,6 +88,51 @@ class BlockContents(unittest.TestCase):
         self.assertEqual(len(skipped), 2)
 
 
+class TheGuardBindsTheATTENTIONPathToo(unittest.TestCase):
+    """`protected_names` stopped the applier BINNING a sender's mail. It never stopped an
+    elicited rule making that sender UNSURFACED - the quieter half of the same outcome, since
+    the mail stays in the inbox and the tool simply stops mentioning it.
+
+    That gap aimed itself at the worst possible targets. Acknowledging correlates with mail a
+    person actually processes, so the senders with the highest ack counts are colleagues, the
+    accountant, the IT lead - never newsletters, which get binned rather than acknowledged. On
+    a field install four of the five senders offered for silencing were on the protected list.
+    """
+
+    def setUp(self):
+        self._real = aa._is_protected
+
+    def tearDown(self):
+        aa._is_protected = self._real
+
+    def _row(self, answer):
+        return ("engaged-sender:payroll", "engaged_sender",
+                "you deal with this sender often", "{}", answer)
+
+    def test_a_protected_sender_cannot_be_unsurfaced(self):
+        aa._is_protected = lambda who: True
+        lines = aa._lines_for(self._row("actually I want to see less of it"))
+        self.assertTrue(lines)
+        self.assertIn("REFUSED", lines[0])
+        self.assertIn("protected list", lines[0])
+
+    def test_the_refusal_says_how_to_proceed_rather_than_just_saying_no(self):
+        aa._is_protected = lambda who: True
+        lines = aa._lines_for(self._row("stop surfacing it"))
+        self.assertIn("Remove them from the guard first", lines[0])
+
+    def test_an_unprotected_sender_is_unaffected(self):
+        aa._is_protected = lambda who: False
+        lines = aa._lines_for(self._row("actually I want to see less of it"))
+        self.assertTrue(lines)
+        self.assertNotIn("REFUSED", lines[0])
+
+    def test_ranking_UP_is_what_a_yes_now_means(self):
+        aa._is_protected = lambda who: False
+        lines = aa._lines_for(self._row("yes - rank it higher"))
+        self.assertIn("Rank `payroll` higher", lines[0])
+
+
 class TheRestOfTheFileSurvives(unittest.TestCase):
 
     def setUp(self):

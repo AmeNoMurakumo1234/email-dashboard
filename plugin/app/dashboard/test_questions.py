@@ -42,8 +42,11 @@ def store(rows, acks=(), ):
              r.get("concept", "promotions"), r.get("importance", ""),
              r.get("direct"), r.get("rcount"), r.get("recipients")))
     for a in acks:
+        # A DATE PER ACK, because "how many separate days" is now the question rather than
+        # "how many rows". Defaults to one shared day, which is what a single sitting looks
+        # like and must NOT read as a habit.
         conn.execute("INSERT INTO acks (kind, key, sender, acked_at) VALUES (?,?,?,?)",
-                     ("message", a[1], a[0], "2026-08-01"))
+                     ("message", a[1], a[0], a[2] if len(a) > 2 else "2026-08-01"))
     conn.commit()
     return conn
 
@@ -103,13 +106,48 @@ class GeneratorFires(unittest.TestCase):
         got, _, _ = kinds(store(bulk(40, concept="promotions")))
         self.assertIn("concept_never_actioned", got)
 
-    def test_acks_are_read_as_answers(self):
-        conn = store(bulk(4), acks=[("Digest <d@example.com>", "k%d" % i) for i in range(4)])
+    def test_one_sitting_of_acks_is_not_a_habit(self):
+        """A backlog clearance must not manufacture a conclusion about a person.
+
+        On a field install 36 acks arrived inside a single twelve-minute window, and the
+        generator read that as five confident findings about five people. A pattern is
+        something that happens on separate DAYS; row counts cannot tell the difference.
+        """
+        conn = store(bulk(4), acks=[("Digest <d@example.com>", "k%d" % i) for i in range(6)])
+        got, _, _ = kinds(conn)
+        self.assertNotIn("engaged_sender", got)
+        self.assertNotIn("repeatedly_acknowledged", got)
+
+    def test_acks_across_days_ask_to_rank_the_sender_UP(self):
+        """An ack is an engagement receipt, not a rejection.
+
+        It says *I have seen this one, it is handled* - so a high count means the sender
+        REACHES you and you deal with them, which is the strongest available signal that they
+        matter. The old question read the same number as fatigue and offered to stop surfacing
+        them, which is the inference running backwards.
+        """
+        conn = store(bulk(4), acks=[("Digest <d@example.com>", "k%d" % i, d)
+                                    for i, d in enumerate(
+                                        ["2026-08-01", "2026-08-03", "2026-08-05", "2026-08-07"])])
         got, items, _ = kinds(conn)
-        self.assertIn("repeatedly_acknowledged", got)
-        self.assertEqual(
-            [i for i in items if i["kind"] == "repeatedly_acknowledged"][0]
-            ["evidence"]["times_acknowledged"], 4)
+        self.assertIn("engaged_sender", got)
+        q = [i for i in items if i["kind"] == "engaged_sender"][0]
+        self.assertEqual(q["evidence"]["on_separate_days"], 4)
+        # The direction is the finding. It must not offer to silence them as its premise.
+        self.assertIn("ranked higher", q["question"])
+        self.assertNotIn("dismissing", q["question"])
+        self.assertEqual(q["options"][0], "yes - rank it higher")
+
+    def test_a_protected_sender_is_NEVER_asked_about(self):
+        """The dangerous instance, and the one that hit hardest in the field: four of the five
+        senders this question was generated for were on the protected list - the accountant,
+        the IT lead, two senior colleagues. If a rule may never bin someone's mail, an offer to
+        stop showing it is a contradiction the panel should not be able to express."""
+        acks = [("Payroll <payroll@example.com>", "k%d" % i, d)
+                for i, d in enumerate(["2026-08-01", "2026-08-03", "2026-08-05"])]
+        conn = store(bulk(4), acks=acks)
+        got, _, _ = kinds(conn, protected=["payroll@example.com"])
+        self.assertNotIn("engaged_sender", got)
 
     def test_mailbox_roles_only_with_more_than_one(self):
         one = bulk(4)

@@ -22,4 +22,4 @@ The exporter reads this file rather than declaring its own copy. Two spellings o
 is the drift this project keeps paying for.
 """
 
-VERSION = "0.27.0"
+VERSION = "0.28.0"

@@ -152,8 +152,14 @@ try:
     if body.get("ok"):
         fails.append("GET /api/ack performed a write - a link or image tag could fire it")
 except urllib.error.HTTPError as e:
-    if e.code != 404:
-        fails.append(f"GET /api/ack returned {e.code}, expected 404")
+    # THE PROPERTY IS "a GET DID NOT WRITE", not a particular status code. This asserted 404
+    # exactly, which over-specified its own stated intent: a write-only endpoint answering a
+    # GET with 405 Method Not Allowed refuses just as completely and says something true, where
+    # 404 claims the route does not exist. That claim cost a reader real doubt - checking
+    # /api/protected-names with a GET right after editing the protected list looks like the
+    # guard has vanished. Any refusal is fine; a 2xx is not.
+    if e.code not in (404, 405):
+        fails.append(f"GET /api/ack returned {e.code}, expected a refusal (404 or 405)")
 
 # ---- function: the real path works, and is reversible ----
 OK = {"X-Dashboard": "1"}

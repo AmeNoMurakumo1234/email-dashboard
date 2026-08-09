@@ -2602,11 +2602,12 @@ def api_answer(conn, q, body=None):
          json.dumps(body.get("evidence") or {}, default=str), answer,
          datetime.now().isoformat(timespec="seconds")))
     conn.commit()
-    applied, why = _apply_answers_now(conn)
-    return {"ok": True, "id": qid, "answered": True, "applied": applied, "apply_note": why}
+    applied, why, mine = _apply_answers_now(conn, qid)
+    return {"ok": True, "id": qid, "answered": True, "applied": applied,
+            "this_answer_wrote_a_rule": mine, "apply_note": why}
 
 
-def _apply_answers_now(conn):
+def _apply_answers_now(conn, qid=None):
     """Fold every recorded answer into the rules file NOW, and stamp only what landed.
 
     THE ANSWER IS THE RATIFICATION. `apply_answers.py` defaults to a dry run for a good
@@ -2643,10 +2644,30 @@ def _apply_answers_now(conn):
                          (str(AA.RULES.name), r[0]))
             n += 1
         conn.commit()
-        return n, "applied to %s" % AA.RULES.name
+        # THE NOTE HAS TO BE ABOUT THE ANSWER THAT WAS JUST GIVEN, not about the file.
+        #
+        # It read "applied to rules-and-policies.md" unconditionally, so a person answering
+        # "no - leave it as it is" was told a rule file had been written. `n` alone does not
+        # fix that either: it counts every rule in the block, so the most conservative answer
+        # available - the one that declines to hide anything - still returns a big number that
+        # looks like it did something.
+        #
+        # So the reply says what THIS answer did, and 0 is reported as an ordinary outcome
+        # rather than an error, because several answers legitimately imply no rule. Same defect
+        # as the `written_to` column fixed above, surviving in the payload the person actually
+        # reads: "your answer changed nothing" and "your answer was lost" must never look alike.
+        mine = qid is not None and qid not in skipped_ids
+        if qid is None:
+            note = ("applied to %s" % AA.RULES.name) if n else "nothing to write"
+        elif mine:
+            note = "applied to %s (%d rule(s) now in force)" % (AA.RULES.name, n)
+        else:
+            note = ("recorded - this answer implies no rule, so nothing was written. The "
+                    "other %d rule(s) in that file are unchanged." % n)
+        return n, note, mine
     except Exception as e:                                            # noqa: BLE001
         return 0, "NOT applied (%s: %s) - your answer is recorded; run " \
-                  "`python tools/apply_answers.py --write`" % (type(e).__name__, e)
+                  "`python tools/apply_answers.py --write`" % (type(e).__name__, e), False
 
 
 RESOLUTIONS = ("email", "off-channel", "declined", "expired")
@@ -2922,6 +2943,17 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             handler = API.get(path)
             if not handler:
+                # SAY WHEN IT IS THE VERB, not the route. A GET on a write-only endpoint used
+                # to answer "unknown endpoint", which reads as a missing guard at exactly the
+                # moment somebody is anxious about the guard - a field tester hit this checking
+                # /api/protected-names right after editing the protected list, and briefly
+                # thought the protection had disappeared. The route exists; only the method is
+                # wrong, and saying so ends that reading immediately.
+                if path in WRITE_API:
+                    return self._send(405, {
+                        "error": "POST only", "endpoint": path,
+                        "detail": "this endpoint exists but is write-only; GET is not "
+                                  "supported. Nothing is wrong with your configuration."})
                 return self._send(404, {"error": "unknown endpoint"})
             conn = db.connect()
             try:

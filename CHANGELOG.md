@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.28.0 — an acknowledgement is engagement, not dismissal
+
+### Fixed — the panel offered to silence the people you deal with most
+
+The sharpest finding this project has had, because it is not about evidence quality. It is a
+signal read to mean its exact opposite.
+
+The questions panel asked, of any sender acknowledged three times or more:
+
+> *You have acknowledged mail from X 5 times. It keeps arriving and you keep dismissing it —
+> should it stop being surfaced at all?*  `[stop surfacing it]`
+
+On a field install it generated five of those, and **four were people on the protected list** —
+the accountant, the IT lead, two senior colleagues. One click writes the rule.
+
+The owner's framing, which is the whole fix:
+
+> *"the framing is wrong. an ack is not a dismissal of a sender. it's saying ok i see that
+> email moving on."*
+
+**An acknowledgement is an engagement receipt.** It says *I read this one, it is handled* — a
+statement about a message that has already done its job of reaching a person. This plugin's own
+`ack.py` says so, describing acks as things *"dealt with off-channel… answered in a call,
+decided in a meeting, delegated verbally."* Every one of those is somebody **acting** on mail.
+
+So the inference ran backwards, and not randomly in who it hit: acking correlates with mail you
+process, so the highest counts belong to your colleagues and your accountant — never the
+newsletters, which get binned rather than acknowledged. **The question aimed itself at exactly
+the people the protected list exists to protect.**
+
+Four changes:
+
+- **The question is gone**, replaced by one that reads the signal correctly: *you have dealt
+  with this sender on N separate days — do you want it ranked higher?* Same data, right
+  direction.
+- **It is never generated for a protected sender.** If a rule may never bin someone's mail, an
+  offer to stop showing it is a contradiction the panel should not be able to express.
+- **Days, not rows.** A backlog clearance produced 36 acks inside twelve minutes and the
+  generator read it as five confident conclusions about five people. A pattern happens on
+  separate days.
+- **The guard now binds the attention path too.** `protected_names` stopped the applier
+  *binning* mail; it never stopped an elicited rule making a sender *unsurfaced* — the quieter
+  half of the same outcome, since the mail stays in the inbox and the tool stops mentioning it.
+  Answering "stop surfacing it" for a protected sender is now refused, with the reason and how
+  to proceed if it was really meant.
+
+### Fixed — a reply that said "applied" when your answer wrote nothing
+
+`POST /api/answer` returned `applied: 0` alongside `"applied to rules-and-policies.md"`. Zero
+rules written, and the note said the file had been written to. Worse, `applied` counts every
+rule in the block, so even the *most conservative* answer a person can give — the one that
+declines to hide anything — came back with a large number that looked like it did something.
+
+The reply now describes **what your answer did**: `this_answer_wrote_a_rule`, and a note that
+says *"recorded — this answer implies no rule, so nothing was written"* when that is the truth.
+This is the same defect as the `written_to` column fixed in 0.26.0, surviving in the payload
+the person actually reads. *Your answer changed nothing* and *your answer was lost* must never
+look alike.
+
+### Changed — a GET on a write-only endpoint says so
+
+`GET /api/protected-names` answered `{"error": "unknown endpoint"}`, which reads as a missing
+guard at exactly the moment somebody is anxious about the guard. The route exists; only the
+method is wrong. It now returns **405** with *"this endpoint exists but is write-only… Nothing
+is wrong with your configuration."* The property the test cares about — a GET must never write
+— is unchanged and still asserted.
+
 ## 0.27.0 — the manifest lists itself, and the board says when it is stale
 
 ### Fixed — a manifest that classified itself as yours

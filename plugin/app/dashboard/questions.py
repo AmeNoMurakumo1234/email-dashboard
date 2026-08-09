@@ -410,23 +410,41 @@ def generate(conn, rules_path=None, protected=None, limit=6):
 
     # ---- 6. ACKS ARE ANSWERS. Repeatedly dismissing something is a rule not yet written.
     acked = _rows(conn,
-                  "SELECT sender, COUNT(*) n FROM acks WHERE sender IS NOT NULL "
-                  "AND sender != '' GROUP BY sender HAVING n >= 3 ORDER BY n DESC LIMIT 5")
+                  # DAYS, NOT ROWS. Counting rows lets one sitting manufacture a habit: a
+                  # backlog clearance produced 36 acks inside twelve minutes on a field
+                  # install, and the generator read that as five confident conclusions about
+                  # five people. A pattern is something that happens on separate days.
+                  "SELECT sender, COUNT(*) n, "
+                  "       COUNT(DISTINCT substr(COALESCE(acked_at,''),1,10)) days "
+                  "FROM acks WHERE sender IS NOT NULL AND sender != '' "
+                  "GROUP BY sender HAVING n >= 3 AND days >= 3 "
+                  "ORDER BY days DESC, n DESC LIMIT 5")
     for a in acked:
         key = _sender_key(a["sender"]) or a["sender"]
-        qid = f"repeatedly-acked:{key}"
+        qid = f"engaged-sender:{key}"
         if qid in answered or key in ruled:
             continue
+        # NEVER ASK THIS ABOUT A PROTECTED SENDER. If a rule may never bin someone's mail, an
+        # offer to stop showing it is a contradiction the panel should not be able to express -
+        # and unsurfacing is the quieter half of the same outcome, since the mail stays in the
+        # inbox and the tool stops mentioning it. Matched locally and generously: an uncertain
+        # match means the question is NOT asked, which is the safe direction for a question
+        # whose wrong answer silences someone.
+        low_sender = (a["sender"] or "").lower()
+        if any(n and n.lower() in low_sender for n in (protected or [])):
+            continue
+        days = a["days"]
         qs.append({
-            "id": qid, "kind": "repeatedly_acknowledged", "weight": 0.6, "stakes": "attention",
-            "question": (f"You have acknowledged mail from {a['sender'][:60]} "
-                         f"{a['n']} times. It keeps arriving and you keep dismissing it - "
-                         f"should it stop being surfaced at all?"),
-            "why_it_matters": ("Acknowledging is already an answer about attention. Asking "
-                               "it out loud turns a repeated chore into a rule."),
-            "evidence": {"times_acknowledged": a["n"]},
-            "options": ["stop surfacing it", "keep surfacing - I want to see each one",
-                        "surface it less often"],
+            "id": qid, "kind": "engaged_sender", "weight": 0.5, "stakes": "attention",
+            "question": (f"You have dealt with mail from {a['sender'][:60]} on {days} "
+                         f"separate days ({a['n']} items). That is a sender you actually act "
+                         f"on - do you want it ranked higher so it is easier to spot?"),
+            "why_it_matters": ("Acknowledging is an engagement receipt, not a rejection - it "
+                               "says 'I have seen this one, it is handled'. So a high count "
+                               "means this sender reaches you and you deal with them."),
+            "evidence": {"acknowledged_items": a["n"], "on_separate_days": days},
+            "options": ["yes - rank it higher", "no - leave it as it is",
+                        "actually I want to see less of it"],
             "writes": "rules-and-policies.md",
         })
 
