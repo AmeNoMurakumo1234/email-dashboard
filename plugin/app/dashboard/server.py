@@ -2949,6 +2949,22 @@ class Handler(BaseHTTPRequestHandler):
                 # /api/protected-names right after editing the protected list, and briefly
                 # thought the protection had disappeared. The route exists; only the method is
                 # wrong, and saying so ends that reading immediately.
+                # LOCALHOST-ONLY CUTS ONE WAY AND NOT THE OTHER, and the difference decides
+                # this line (owner, 2026-08-08: "this is a private website on localhost, it is
+                # not ever intended to be publicly accessible").
+                #
+                # It DOES settle information disclosure. Naming an endpoint that exists tells
+                # a remote attacker nothing, because there is no remote attacker: nobody off
+                # this machine can reach the port to read the message. So the choice between a
+                # vague 404 and a helpful 405 is decided purely on which one helps the person
+                # reading it, and vagueness helps nobody here.
+                #
+                # It does NOT settle CSRF, and the guards above stay exactly as they are. Any
+                # page in the owner's browser can issue requests to 127.0.0.1 - that is the
+                # whole point of the header and Origin checks, and "it's only localhost" is
+                # the reasoning that would remove them. Being unreachable from outside the
+                # machine and being unreachable from a tab the owner happens to have open are
+                # different properties, and only the first one is true.
                 if path in WRITE_API:
                     return self._send(405, {
                         "error": "POST only", "endpoint": path,
