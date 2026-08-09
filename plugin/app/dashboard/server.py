@@ -1106,7 +1106,47 @@ def api_features(conn, q):
     # process started, so a server left running across an edit keeps reporting the OLD number
     # while the repo has moved on - and seeing that beside the title is how you catch a stale
     # server at a glance instead of wondering why a shipped change never appeared.
-    return {"panels": panels, "version": VERSION, "started": STARTED_AT}
+    newest, stale = _served_code_age()
+    return {"panels": panels, "version": VERSION, "started": STARTED_AT,
+            "newest_edit": newest, "stale": stale}
+
+
+def _served_code_age():
+    """The newest edit among the files THIS process serves, and whether it postdates start-up.
+
+    Reported because a version number only catches staleness once somebody cuts a release, and
+    the commoner case - anyone running from a working tree - is an edit that never got a
+    version bump. A start time older than your last edit is the same failure and needs no
+    release to have happened.
+
+    The comparison is done HERE rather than shown as two timestamps for the reader to subtract.
+    A panel that hands you two numbers and expects you to notice one is bigger is the same
+    unhelpfulness as an uptime check answering "is something listening"; the useful answer is
+    "this process is running code older than your last edit."
+
+    Never raises and never blocks the page: an unreadable directory yields (None, False), which
+    claims nothing rather than inventing an alarm.
+    """
+    try:
+        newest = 0.0
+        for folder in (HERE, os.path.join(HERE, "static")):
+            if not os.path.isdir(folder):
+                continue
+            for name in os.listdir(folder):
+                if not name.endswith((".py", ".js", ".html", ".css")):
+                    continue
+                if name.startswith("test_"):
+                    continue          # a test is not code this process serves
+                try:
+                    newest = max(newest, os.path.getmtime(os.path.join(folder, name)))
+                except OSError:
+                    continue
+        if not newest:
+            return None, False
+        iso = datetime.fromtimestamp(newest).replace(microsecond=0).isoformat()
+        return iso, iso > STARTED_AT
+    except Exception:                                                 # noqa: BLE001
+        return None, False
 
 
 def api_setup(conn, q):

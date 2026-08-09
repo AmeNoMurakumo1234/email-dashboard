@@ -1343,7 +1343,7 @@ async function loadFeatures() {
   try {
     const data = await get("/api/features");
     features = Object.assign(features, data.panels || {});
-    showVersion(data.version, data.started);
+    showVersion(data.version, data.started, data.newest_edit, data.stale);
   } catch (e) {
     // Unreachable config means every OPTIONAL panel stays off. Nothing here is load-bearing,
     // so the harmless answer is the right one.
@@ -1366,10 +1366,19 @@ async function loadFeatures() {
 // from anything the page itself carries would defeat the purpose: static files are served per
 // request, so a stale process would hand you a fresh number and look healthy.
 //
-// Deliberately quiet: it is a reference, not news. The start time rides in the tooltip rather
-// than on the page, because a timestamp that predates your last edit is the confirming detail
-// once you already suspect something, not a thing worth spending header space on.
-function showVersion(version, started) {
+// Quiet when everything is current, loud only when it is not.
+//
+// The start time was originally tooltip-only, on the reasoning that it is a confirming detail
+// once you already suspect something. That was wrong in the commoner case: a VERSION mismatch
+// only helps once somebody cuts a release, and anyone running from a working tree edits far
+// more often than they bump a number. A start time older than your last edit is the same
+// failure with no release required.
+//
+// So the server does the subtraction. Handing the reader two timestamps and expecting them to
+// notice one is bigger is the same unhelpfulness as an uptime check that answers "is something
+// listening" - the useful answer is "this process is running code older than your last edit",
+// and that is the only case that gets to shout.
+function showVersion(version, started, newestEdit, stale) {
   const h1 = document.querySelector("h1");
   if (!h1 || !version) return;
   let el = document.getElementById("appVersion");
@@ -1379,11 +1388,17 @@ function showVersion(version, started) {
     el.className = "app-version";
     h1.appendChild(el);
   }
-  el.textContent = "v" + version;
-  el.title = started
-    ? `serving v${version}, running since ${started.replace("T", " ")}\n` +
-      `If that start time is older than your last edit, this process is stale - restart it.`
-    : `serving v${version}`;
+  const when = (started || "").replace("T", " ").slice(0, 16);
+  el.textContent = stale ? `v${version} · STALE` : `v${version}`;
+  el.classList.toggle("app-version-stale", !!stale);
+  el.title = stale
+    ? `This server is running code from BEFORE your last edit.\n` +
+      `serving v${version}, started ${when}\n` +
+      `newest file on disk ${(newestEdit || "").replace("T", " ").slice(0, 16)}\n` +
+      `Restart it, or you are looking at yesterday's dashboard.`
+    : `serving v${version}, started ${when}` +
+      (newestEdit ? `\nnewest file on disk ${newestEdit.replace("T", " ").slice(0, 16)}` +
+        `\nUp to date: nothing it serves has changed since it started.` : "");
 }
 
 // ---------- first run: what still needs doing, and how to do it ----------

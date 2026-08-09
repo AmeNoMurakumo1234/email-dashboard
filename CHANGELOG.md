@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.27.0 — the manifest lists itself, and the board says when it is stale
+
+### Fixed — a manifest that classified itself as yours
+
+`app/SHIPPED-FILES.txt` says *"anything under app/ NOT listed here is your own, not the
+plugin's"* — and it was not in its own list. Applying its own rule to itself gave the wrong
+answer.
+
+Cosmetic, until somebody writes the upgrade script the file exists to invite:
+
+```
+copy every path in the manifest from the new build over the install;
+leave everything else alone, it is the user's.
+```
+
+That script never updates the manifest, **because the manifest is not in the manifest.** The
+first upgrade works. The second is driven by the *first* build's list, so anything added since
+is silently not installed — and the failure is invisible, because the thing doing the checking
+is the stale artefact. A file that was added and never copied looks exactly like a file that was
+never added.
+
+One line in the generated list. `test_install` now asserts both that the manifest lists itself
+and that every path in it actually shipped, so the same gap cannot reopen quietly.
+
+### Added — the version badge turns amber when the server is running old code
+
+The version number only catches staleness once somebody cuts a release. Anyone running from a
+working tree edits far more often than they bump a number, and a start time older than the last
+edit is the same failure with no release required.
+
+So the server does the comparison rather than showing you two timestamps and hoping you notice
+one is bigger. `/api/features` now also reports `newest_edit` — the newest file among the ones
+this process serves — and `stale`, which is simply whether that postdates start-up. The badge
+reads **`v0.27.0 · STALE`** in amber, and the tooltip says what to do about it.
+
+That is the same unhelpfulness this project keeps removing: an uptime check answering *is
+something listening* rather than *is it what you shipped*, a panel handing you two numbers and
+leaving the subtraction to you. Verified in both directions — a fresh process reports
+`stale: false`, and touching one served file flips it to `true` without a restart.
+
+*Reported from the field, where `version.py` had already caught its first real instance: two
+dashboard processes serving pre-release code for about twenty hours, with the port answering
+200 the entire time.*
+
 ## 0.26.0 — your answers are applied when you give them, and rules resolve as a frontier
 
 ### Fixed — answering a question did nothing

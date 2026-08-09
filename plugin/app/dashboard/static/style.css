@@ -51,6 +51,16 @@ h1 { font-size: 20px; margin: 0; }
   vertical-align: 2px; white-space: nowrap; cursor: help;
 }
 
+/* STALE: the process is serving code older than the newest file on disk. This is the one state
+   worth colour, because it is the difference between reading your dashboard and reading
+   yesterday's. Amber rather than red - nothing is broken, you are just looking at the past. */
+.app-version-stale {
+  color: #6b4b00; background: #ffd66b; border-color: #d9a400;
+}
+@media (prefers-color-scheme: dark) {
+  .app-version-stale { color: #1c1400; background: #f0b429; border-color: #f0b429; }
+}
+
 /* WHICH DAY AM I LOOKING AT. This was 13px grey text saying "showing run for 2026-08-06",
    which is the one fact every number on the page depends on and was the quietest thing in
    the header. Now the date itself carries the weight, with a tag saying whether it is the
