@@ -294,6 +294,36 @@ def main():
 
     print(f"CLEARED {len(allowed)} of {len(messages)} to trash.")
 
+    # HOW THIN IS THE EVIDENCE BEHIND A CLEARANCE - reported instead of thresholded.
+    #
+    # The slice fix means a (sender, category) slice with one prior binned message and nothing
+    # kept will clear, where the whole sender would have been refused. A minimum-evidence floor
+    # was the obvious guard against that, and measuring the store argued against it: of 138
+    # such thin slices, every single one sits in a noise label - promo, social-notification,
+    # marketing, junk - and not one is money, security, family or medical. That is not luck.
+    # A slice only accumulates disposable history because the triager kept judging it
+    # disposable, so thin slices self-select for noise.
+    #
+    # A floor would also add latency to exactly the labels nobody disputes, while protecting
+    # nothing the protected-name, protected-category and attention checks do not already cover.
+    # So the honest move is the project's usual one: do not threshold it, SHOW it. If this line
+    # ever names something that is not noise, that is the evidence for a floor - and it will be
+    # evidence rather than a hunch.
+    thin = []
+    for m, _ in allowed:
+        key = _sender_key(m.get("sender") or m.get("from") or "") or ""
+        cat = m.get("category") or ""
+        h = hist.get((key, cat))
+        if h and h["trashed"] <= 2:
+            thin.append((m, h["trashed"]))
+    if thin:
+        print(f"  of those, {len(thin)} rest on THIN evidence (<=2 prior binned, none kept):")
+        for m, n in thin[:8]:
+            print("    %-34s %-20s %d prior"
+                  % ((m.get("sender") or "?")[:34], (m.get("category") or "-")[:20], n))
+        if len(thin) > 8:
+            print("    ... and %d more" % (len(thin) - 8))
+
     if args.emit_cleared:
         n = emit_cleared(allowed, args.emit_cleared)
         print(f"\nwrote {n} cleared message(s) to {args.emit_cleared}")

@@ -20,6 +20,7 @@ dashboard/livecheck.py
 dashboard/mailview.py
 dashboard/migrate_concepts.py
 dashboard/questions.py
+dashboard/ruleset.py
 dashboard/server.py
 dashboard/signin.py
 dashboard/start-dashboard.ps1
@@ -52,6 +53,7 @@ dashboard/test_questions.py
 dashboard/test_quiet.py
 dashboard/test_repeats.py
 dashboard/test_rule_scope.py
+dashboard/test_ruleset.py
 dashboard/test_sender_rule.py
 dashboard/test_signin.py
 dashboard/test_stored_body.py

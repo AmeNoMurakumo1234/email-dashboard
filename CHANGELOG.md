@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.26.0 — your answers are applied when you give them, and rules resolve as a frontier
+
+### Fixed — answering a question did nothing
+
+The worst defect this project has shipped, because of who it fails. Answers recorded in the
+dashboard were stamped `written_to: rules-and-policies.md` **and nothing was ever written**.
+The column was taken from what the *page asserted*, never from a write anybody performed, and
+the fold was a separate command a user has no reason to know exists.
+
+Measured live: **twenty-one answers, every one stamped as written, not one line in the file.**
+The next sweep would have triaged mail under rules containing none of the owner's rulings,
+while the record cheerfully said they had been applied.
+
+> *A user who takes the time to answer questions and sees the answers get ignored the next day
+> is going to be pissed, and rightfully so.*
+
+Two changes, and the second matters as much as the first:
+
+- **The answer is the ratification.** `/api/answer` now folds every recorded answer into the
+  rules file immediately and returns `applied` and `apply_note` so the page can say what
+  happened. The dry-run gate in `apply_answers.py` exists to stop *the agent* writing rules
+  nobody reviewed; it was never meant to stand between a person and their own decision.
+- **`written_to` is stamped only for answers that actually produced a rule**, after the write.
+  An answer that correctly implies no rule keeps it NULL, which is the truth about it.
+
+Failure is never silent: if the file is locked or missing, the answer is still recorded and the
+response says so, with the command to run.
+
+### Fixed — a free-text answer could be translated into its own opposite
+
+Answers were classified with `startswith` against the canned options, which works until
+somebody types their own sentence — and the whole point of a free-text box is that they will.
+Measured: *"mostly, but surface anything addressed to me"* became an exception rule, while
+*"surface anything addressed to me and continue scanning for sales"* — the same instruction,
+different opening word — matched nothing, fell through to the default, and became **"never
+surface it."** The exact opposite of what was asked for, in a tool whose entire job is deciding
+what a person sees.
+
+Intent is now read from the whole sentence. And where an answer matches no known shape, the
+program **writes nothing and says so** rather than guessing — prose that matched no option used
+to be pasted in verbatim under a heading called "Rules", which made a remark look like policy.
+The report is explicit that an answer producing no rule and no mention is indistinguishable
+from one that was never given.
+
+### Added — rules resolve as a Pareto frontier (`dashboard/ruleset.py`)
+
+People contradict themselves, and an agent derives rules the person never saw and therefore
+cannot knowingly contradict. Both end the same way: two rules about the same mail, disagreeing,
+with nothing recording which governs. A priority list is a total order imposed on things that
+are not totally ordered, and it hides the interesting case.
+
+A rule is a point on three axes — **specificity** (global < concept < sender), **time** (older
+< newer), and **provenance** (inferred < ruled by a human). One rule supersedes another only
+when they are about the same mail and it is at least as strong on every axis. Rules in
+different lanes never compete.
+
+Two properties worth the design:
+
+- **An old human rule against a new inferred rule does not resolve.** The person wins
+  provenance, the machine wins recency, neither dominates, and both stay on the frontier as a
+  reported conflict. That is the model refusing to overrule someone with an inference, or to
+  ignore what has been learned since.
+- **Nothing is deleted.** A superseded rule keeps its place with a pointer to what replaced it,
+  so **removing the newer rule brings the older ruling back into force by itself** — no undo
+  log, no remembering what it used to say.
+
+Ten tests, including revival through a chain of three.
+
+### Changed — thin evidence is reported, not thresholded
+
+A `(sender, category)` slice with one prior binned message and nothing kept will clear where the
+whole sender would have been refused. Before adding a minimum-evidence floor, it was measured:
+of **138** such slices in a real store, every one sits in a noise label — promo, social
+notification, marketing, junk — and **not one is money, security, family or medical**. A slice
+only accumulates disposable history because the triager kept judging it disposable, so thin
+slices self-select for noise. So the applier **names** them instead of blocking them. If that
+line ever shows something that is not noise, that is evidence for a floor rather than a hunch.
+
 ## 0.25.0 — the board tells you which version it is running
 
 Asked for directly: *show the version next to the title so I can tell at a glance whether the

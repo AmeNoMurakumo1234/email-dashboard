@@ -54,10 +54,34 @@ RULES = ROOT / "rules-and-policies.md"
 START = "<!-- elicited:start -->"
 END = "<!-- elicited:end -->"
 HEADING = "## Rules from your own mail"
-PREAMBLE = (
+# A LIST OF LINES, not one string with newlines in it. The block is joined with the file's
+# OWN line ending, so an embedded "\n" in any single entry writes a lone LF into a CRLF file
+# and rewrites every line in the next diff. test_crlf_files_stay_crlf caught exactly that.
+PREAMBLE = [
     "_Written by `tools/apply_answers.py` from questions you answered. Each line carries "
     "the evidence and the date behind it. Delete this whole block to remove every rule in "
-    "it; edit a line by hand and re-running will not restore it._")
+    "it; edit a line by hand and re-running will not restore it._",
+    "",
+    "**How these resolve against each other and against the numbered rules above.**",
+    "People contradict themselves, answer two questions at different altitudes in one",
+    "sitting, and cannot contradict a rule they were never shown. So rules are ordered as a",
+    "**Pareto frontier** (`dashboard/ruleset.py`) on three axes, not by a priority list:",
+    "",
+    "- **specificity** - global < concept < **sender**",
+    "- **time** - older < **newer**",
+    "- **provenance** - inferred by the agent < **ruled by you**",
+    "",
+    "One rule supersedes another only when they are about the **same mail** and it is at",
+    "least as strong on every axis. Rules in different lanes never compete, so a ruling about",
+    "one category cannot quietly reach into another. Treating a category as background does",
+    "**not** silence a specific sender inside it - that is a sender-level rule and it wins.",
+    "",
+    "Two consequences worth knowing. A rule you made long ago against one the agent inferred",
+    "yesterday **does not resolve** - you outrank it, it outranks you on recency - so it is",
+    "reported for you to settle rather than decided by whichever was read last. And nothing",
+    "here is ever deleted: a superseded rule keeps its place with a pointer to what replaced",
+    "it, so **removing the newer rule brings the older ruling back into force by itself**._",
+]
 
 
 def _lines_for(row):
@@ -71,6 +95,23 @@ def _lines_for(row):
     qid, kind, question, evidence, answer = row
     a = (answer or "").strip()
     low = a.lower()
+
+    # WANTS TO STILL SEE SOME OF IT, said in whatever words came to hand.
+    #
+    # Every branch below used to classify by `startswith` against the dashboard's canned
+    # options, which works right up until somebody types their own sentence - and the whole
+    # point of a free-text box is that they will. Measured live: "mostly, but surface anything
+    # addressed to me" matched and became an exception rule, while "surface anything addressed
+    # to me and continue scanning for steam sales" - the same instruction, different opening
+    # word - matched nothing and fell through to the default, which was
+    # "never surface it". The exact OPPOSITE of what was asked for.
+    #
+    # In a tool whose entire job is deciding what a person sees, silently inverting "show me
+    # this" is the worst direction available. So intent is read from the whole sentence.
+    wants_exception = (("address" in low or "addressed to me" in low or "asking me" in low
+                        or "asks me" in low or "aimed at me" in low)
+                       and ("surface" in low or "keep" in low or "show" in low
+                            or "except" in low or "but" in low))
     try:
         ev = json.loads(evidence or "{}")
     except ValueError:
@@ -85,7 +126,11 @@ def _lines_for(row):
                     % who]
         if low.startswith("leave it") or low.startswith("it matters"):
             return None                     # a real answer that correctly writes nothing
-        return ["- `%s`: %s" % (who, a)]
+        # Prose that matched no option used to be pasted in verbatim as though it were a rule.
+        # A sentence like "chances are high that this is a scam" is a genuine and useful
+        # answer, and it is not an instruction the routine can follow - so it is recorded and
+        # reported, never dressed up as policy.
+        return None
 
     if kind == "personally_addressed":
         who = qid.split(":", 1)[-1]
@@ -99,12 +144,17 @@ def _lines_for(row):
 
     if kind == "concept_never_actioned":
         what = qid.split(":", 1)[-1]
-        if low.startswith("no"):
-            return None
-        if low.startswith("mostly"):
+        if wants_exception or low.startswith("mostly"):
             return ["- Treat \"%s\" as background, except anything addressed to me "
                     "directly." % what]
-        return ["- Treat \"%s\" as background - never surface it." % what]
+        if low.startswith("no"):
+            return None
+        if low.startswith("yes") or "never surface" in low or "background" in low:
+            return ["- Treat \"%s\" as background - never surface it." % what]
+        # Free text that matches no known shape. Writing nothing and SAYING SO beats guessing:
+        # the guess here would be "never surface it", and a wrong guess in that direction hides
+        # mail the person asked to see.
+        return None
 
     if kind == "repeatedly_acknowledged":
         who = qid.split(":", 1)[-1]
@@ -112,7 +162,9 @@ def _lines_for(row):
             return None
         if low.startswith("surface it less"):
             return ["- Surface `%s` as a collapsed series, not one row per message." % who]
-        return ["- Stop surfacing `%s`; I have acknowledged it repeatedly." % who]
+        if low.startswith("stop surfacing") or "stop" in low:
+            return ["- Stop surfacing `%s`; I have acknowledged it repeatedly." % who]
+        return None                         # unclear: do not guess toward hiding things
 
     if kind == "mailbox_role":
         return ["- Mailbox roles: %s" % a]
@@ -128,7 +180,11 @@ def _lines_for(row):
         # so the loader's opinion of what counts as configured stays the only one.
         return None
 
-    return ["- %s" % a] if a else None
+    # An answer of a kind this program does not know how to translate. Recorded in the store,
+    # reported to the operator, and deliberately NOT written as a rule - pasting free prose
+    # under a heading called "Rules" makes it look like policy the routine follows, when
+    # nothing reads it.
+    return None
 
 
 def _evidence_note(qid, evidence, when):
@@ -158,7 +214,7 @@ def build_block(conn):
         out.append(_evidence_note(r[0], r[3], (r[5] or "")[:10]))
     if not out:
         return [], skipped
-    return [START, HEADING, "", PREAMBLE, ""] + out + ["", END], skipped
+    return [START, HEADING, ""] + PREAMBLE + [""] + out + ["", END], skipped
 
 
 def splice(raw, block, nl):
@@ -241,9 +297,13 @@ def main(argv=None):
         # Named, not silently dropped. "12 answers, 4 rules" with no explanation is the
         # understatement this project keeps finding; an answer that correctly writes
         # nothing should say so rather than look like an answer that went missing.
-        print("\n%d answer(s) recorded that correctly imply no rule here:" % len(skipped))
+        print("\n%d answer(s) recorded that this program did NOT turn into a rule:"
+              % len(skipped))
+        print("  Some of these correctly imply nothing. Others are free text it could not")
+        print("  translate - READ THEM. An answer that produced no rule and no mention is")
+        print("  indistinguishable from one that was never given.")
         for qid, ans in skipped:
-            print("  %-40s %s" % (qid, (ans or "")[:50]))
+            print("  %-40s %s" % (qid, (ans or "")[:80]))
 
     if not args.write:
         print("\nDRY RUN - nothing written. Re-run with --write to apply.")

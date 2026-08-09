@@ -2547,15 +2547,66 @@ def api_answer(conn, q, body=None):
         conn.execute("DELETE FROM answers WHERE question_id = ?", (qid,))
         conn.commit()
         return {"ok": True, "id": qid, "answered": False}
+    # `written_to` is NOT taken from the caller any more. The page used to assert where the
+    # answer would go and this recorded that claim verbatim, so the column read as "written"
+    # for answers nothing had ever written. Measured live: twenty-one answers, every one
+    # stamped `rules-and-policies.md`, and not one line in that file - the fold was a separate
+    # command nobody had run. Somebody who sits down and answers twenty-one questions and
+    # finds them ignored the next morning is entitled to be angry, and the record telling them
+    # it worked is the part that makes it worse.
     conn.execute(
         "INSERT INTO answers (question_id, kind, question, evidence, answer, answered_at, "
-        "written_to) VALUES (?,?,?,?,?,?,?) ON CONFLICT(question_id) DO UPDATE SET "
-        "answer = excluded.answer, answered_at = excluded.answered_at",
+        "written_to) VALUES (?,?,?,?,?,?,NULL) ON CONFLICT(question_id) DO UPDATE SET "
+        "answer = excluded.answer, answered_at = excluded.answered_at, written_to = NULL",
         (qid, body.get("kind"), body.get("question"),
          json.dumps(body.get("evidence") or {}, default=str), answer,
-         datetime.now().isoformat(timespec="seconds"), body.get("written_to")))
+         datetime.now().isoformat(timespec="seconds")))
     conn.commit()
-    return {"ok": True, "id": qid, "answered": True}
+    applied, why = _apply_answers_now(conn)
+    return {"ok": True, "id": qid, "answered": True, "applied": applied, "apply_note": why}
+
+
+def _apply_answers_now(conn):
+    """Fold every recorded answer into the rules file NOW, and stamp only what landed.
+
+    THE ANSWER IS THE RATIFICATION. `apply_answers.py` defaults to a dry run for a good
+    reason - a rule nobody meant silently shapes every future sweep - but that gate exists to
+    stop the AGENT writing rules unreviewed. Here the human has already reviewed: they read
+    the question, saw the evidence, and typed the answer. Making them run a second command
+    they were never told about turns their decision into a draft.
+
+    Returns (count_written, note). Never raises: recording the answer is the important part
+    and must survive a file that is read-only, missing, or open in an editor.
+    """
+    try:
+        sys.path.insert(0, str(os.path.join(os.path.dirname(HERE), "tools")))
+        import apply_answers as AA                                    # noqa: PLC0415
+        block, skipped = AA.build_block(conn)
+        with open(AA.RULES, encoding="utf-8", newline="") as f:
+            raw = f.read()
+        # The file's OWN line ending, or a single stray LF rewrites every line in the next diff.
+        nl = "\r\n" if "\r\n" in raw else "\n"
+        new = AA.splice(raw, block, nl)
+        if new != raw:
+            with open(AA.RULES, "w", encoding="utf-8", newline="") as f:
+                f.write(new)
+        # Stamp ONLY the rows that produced a line. An answer that correctly implies no rule
+        # keeps written_to NULL, which is the truth about it, and the dashboard can then say
+        # "recorded, implies no rule" rather than implying it was filed as policy.
+        skipped_ids = {q for q, _ in skipped}
+        n = 0
+        for r in conn.execute("SELECT question_id FROM answers WHERE answer IS NOT NULL "
+                              "AND TRIM(answer) != ''").fetchall():
+            if r[0] in skipped_ids:
+                continue
+            conn.execute("UPDATE answers SET written_to = ? WHERE question_id = ?",
+                         (str(AA.RULES.name), r[0]))
+            n += 1
+        conn.commit()
+        return n, "applied to %s" % AA.RULES.name
+    except Exception as e:                                            # noqa: BLE001
+        return 0, "NOT applied (%s: %s) - your answer is recorded; run " \
+                  "`python tools/apply_answers.py --write`" % (type(e).__name__, e)
 
 
 RESOLUTIONS = ("email", "off-channel", "declined", "expired")

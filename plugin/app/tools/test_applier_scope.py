@@ -117,6 +117,33 @@ class SliceTests(unittest.TestCase):
         self.assertEqual(after, [])
 
 
+class ThinEvidenceTests(unittest.TestCase):
+    """A clearance resting on one prior message must be VISIBLE rather than blocked.
+
+    Measured before choosing: of 138 slices in a real store that clear on <=2 prior binned
+    messages and nothing kept, every one sits in a noise label and not one is money, security,
+    family or medical. A slice only accumulates disposable history because the triager kept
+    judging it disposable, so thin slices self-select for noise. A floor would add latency to
+    the labels nobody disputes and protect nothing the protected-name, protected-category and
+    attention checks do not already cover.
+    """
+
+    def test_a_thin_slice_is_identifiable_from_history(self):
+        s = Store()
+        s.add("promo", "would_trash", "<one@x>")          # a single prior, nothing kept
+        for i in range(4):
+            s.add("bulk", "would_trash", "<bulk%d@x>" % i)
+        hist = ap._history(s.conn)
+        key = list(k for k in hist if isinstance(k, tuple) and k[1] == "promo")[0]
+        self.assertEqual(hist[key]["trashed"], 1)         # thin: would be reported
+        self.assertEqual(hist[key]["kept"], 0)
+        bulk = list(k for k in hist if isinstance(k, tuple) and k[1] == "bulk")[0]
+        self.assertEqual(hist[bulk]["trashed"], 4)        # not thin: silent
+        # Both still clear - the point is that one of them is announced, not refused.
+        self.assertEqual(ap.judge(
+            {"sender": "Notify <notify@example.test>", "category": "promo"}, PROT, hist), [])
+
+
 class DegradeTests(unittest.TestCase):
     """A guard whose MEMORY fails must not fail open.
 
