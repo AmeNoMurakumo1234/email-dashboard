@@ -1227,8 +1227,8 @@ direction; that is one line. The months compared and the volume caveat live behi
 It said *"nothing recorded for this run"* on every backfilled day. Correct, and useless: a
 historical run has no account status because nothing connected to a mailbox that day, but
 whether your mailboxes are reachable is a fact about **now**. It falls back to the most
-recent status and **labels it** — `9/9 connected, as of 2026-08-07`. An old answer with its
-date beats a blank panel; an old answer without its date would be worse than both.
+recent status and **labels it** — `4/4 connected, as of <that run's date>`. An old answer with
+its date beats a blank panel; an old answer without its date would be worse than both.
 
 ## 0.11.2 — dates that mean what they say
 
