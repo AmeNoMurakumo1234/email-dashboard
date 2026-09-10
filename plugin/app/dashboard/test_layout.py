@@ -183,5 +183,51 @@ class TheWorkingAreaFloorIsViewportAware(unittest.TestCase):
         self.assertNotIn("overflow-y: hidden", m.group(1))
 
 
+
+class TheHeaderIsWhatMakesThePageScrollSideways(unittest.TestCase):
+    """The phone-width horizontal scroll (TODO 7), diagnosed properly at the third attempt.
+
+    Two earlier readings named `#heatmap` - it is the widest element on the page at
+    1136px - and the prescribed remedy (`overflow-x: auto` + `min-width: 0` on
+    `.heat-wrap`) turned out to be in the file already, which refuted that diagnosis
+    rather than confirming it. Widest is not the same as what sets `scrollWidth`: a
+    clipped child does not extend the scroll box, and the heatmap IS clipped.
+
+    Measured at an honestly-reporting 768px viewport (`clientWidth` 753, i.e.
+    `innerWidth` minus the scrollbar - the one emulation on this pane that agrees with
+    itself), exactly ONE element's right edge equals the page `scrollWidth` of 956:
+    `#scorePanel`, left 547, width 409. Its parent is the `<header>`, a nowrap flex row.
+    So the header cannot wrap, the scoreboard cannot shrink, and the overflow is the
+    scoreboard being pushed off the right edge - nothing to do with the chart.
+    """
+
+    def header_block(self):
+        block = re.search(r"^header\s*\{(.*?)\}", css(strip_comments=True), re.S | re.M)
+        self.assertIsNotNone(block, "the header has no rule block at all")
+        return block.group(1)
+
+    def test_the_header_is_allowed_to_wrap(self):
+        """Without this the last child is pushed past the viewport instead of dropping
+        to a second line, and the whole page scrolls sideways behind it."""
+        wraps = re.findall(r"flex-wrap:\s*([^;]+);", self.header_block())
+        self.assertTrue(wraps, "the header sets no flex-wrap, so it defaults to nowrap "
+                               "and its last child overflows the viewport")
+        self.assertNotIn("nowrap", wraps[-1],
+                         "the header is explicitly nowrap, which is the cause of the "
+                         "sideways scroll, not a fix for it")
+
+    def test_the_title_can_shrink(self):
+        """A flex item defaults to min-width:auto, so it refuses to shrink below its
+        content and shoves its siblings out even when the row can wrap."""
+        block = re.search(r"^header\s+\.title\s*\{(.*?)\}|^\.title\s*\{(.*?)\}",
+                          css(strip_comments=True), re.S | re.M)
+        self.assertIsNotNone(block, "the header title has no rule block, so it keeps the "
+                                    "default min-width:auto and cannot shrink")
+        body = block.group(1) or block.group(2)
+        self.assertIn("min-width", body,
+                      "the title does not set min-width, so it cannot shrink below its "
+                      "content width")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

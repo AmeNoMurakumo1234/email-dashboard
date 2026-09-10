@@ -287,6 +287,26 @@ class AcknowledgedIsNotOutstanding(unittest.TestCase):
         opened, _ = self.s.ingest([msg(message_id="<a@x>")], "2026-08-01")
         self.assertEqual(opened, 0)
 
+    def test_acking_ONE_message_does_not_silence_the_NEXT_one(self):
+        """A message ack is about THAT message. The series is what a thread ack is for.
+
+        Found live. A notification series can carry a constant, uninformative subject by
+        design - a portal that mails "you have a new secure message" and keeps the content
+        out of the mail sends the identical subject every time. Acknowledging one such
+        message stopped a standing item from opening for a genuinely new one under a
+        different Message-ID, and would have gone on doing so for every later arrival.
+
+        `ack_key` already states the intent - its `row:` fallback uses the EXACT subject
+        "so it stays one item and does not silence a whole series". `_already_acknowledged`
+        was matching on account+subject for EVERY message ack, including the 31 of 38 that
+        carry a Message-ID of their own, which collapses `message` scope into `thread`
+        scope. The two scopes are the whole point of having two.
+        """
+        self.ack(message_id="<first@x>")
+        opened, _ = self.s.ingest([msg(message_id="<second@x>")], "2026-08-26")
+        self.assertEqual(opened, 1,
+                         "a new Message-ID under the same subject is a new obligation")
+
     def test_a_thread_ack_covers_this_instance(self):
         server.api_ack(self.s.conn, {}, {
             "kind": "thread", "account": "owner@example.com",
@@ -324,9 +344,6 @@ class AcknowledgedIsNotOutstanding(unittest.TestCase):
         self.s.ingest([msg(message_id="<d@x>")], "2026-08-01")
         self.assertFalse(self.s.items()["items"][0]["acknowledged"])
 
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 
 class HistoricalBatchesOpenNothing(unittest.TestCase):
@@ -405,3 +422,83 @@ class AcknowledgedLeavesTheOpenList(unittest.TestCase):
         """The control. If the filter took everything the panel would be empty forever."""
         self.assertEqual(self.s.items()["open"], 1)
         self.assertEqual(self.s.items()["hidden_because_acknowledged"], 0)
+
+
+class AnItemCanGoQuiet(unittest.TestCase):
+    """OPEN AND OUT OF SIGHT ARE DIFFERENT, and the second one is what actually bites.
+
+    Written from a defect in the daily report rather than in the code. Items had been open
+    and unacknowledged for over a week. Early on, the report said in as many words that it
+    was deliberately not re-surfacing them, to avoid nagging about something already shown.
+    A few runs later it did not mention them at all - so a deliberate silence with a stated
+    reason became an ordinary silence with none, and the only thing still counting the days
+    was this panel.
+
+    `days_open` cannot catch that: an item seen in every single run and an item nobody has
+    looked at since August both age at one day per day. The distinguishing fact is how long
+    it has been since a RUN saw the item, and that number was in the store the whole time
+    (`last_seen`) without ever being computed.
+
+    Measured against the newest run in the store, not against today. If the sweep has not
+    run for a week then nothing has been seen for a week, and blaming the items for that
+    would light up the whole list at exactly the moment the list is least informative.
+    """
+
+    def setUp(self):
+        self.s = Store()
+
+    def test_an_item_seen_every_run_has_not_gone_quiet(self):
+        for day in ("2026-08-01", "2026-08-02", "2026-08-03"):
+            self.s.ingest([msg(message_id="<a@x>")], day)
+        row = self.s.items()["items"][0]
+        self.assertEqual(row["days_since_seen"], 0)
+        self.assertFalse(row["quiet"])
+        self.assertEqual(self.s.items()["quiet"], 0)
+
+    def test_an_item_no_run_has_seen_for_a_week_is_quiet(self):
+        self.s.ingest([msg(message_id="<a@x>")], "2026-08-01")
+        # Seven later runs, none of which carried this message.
+        for day in ("2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05",
+                    "2026-08-06", "2026-08-07", "2026-08-08"):
+            self.s.ingest([msg(message_id="<b@x>", subject="something else")], day)
+        rows = {r["key"]: r for r in self.s.items()["items"]}
+        self.assertEqual(rows["<a@x>"]["days_since_seen"], 7)
+        self.assertTrue(rows["<a@x>"]["quiet"],
+                        "seven sweeps went by without this item appearing in any of them")
+        self.assertFalse(rows["<b@x>"]["quiet"], "control: this one was in the last run")
+        self.assertEqual(self.s.items()["quiet"], 1,
+                         "the header count must name the quiet ones, not the open ones")
+
+    def test_the_clock_is_the_newest_run_not_today(self):
+        """If the sweep stops, that is the sweep's fault and not the items'."""
+        self.s.ingest([msg(message_id="<a@x>")], "2026-01-01")
+        row = self.s.items()["items"][0]
+        self.assertEqual(row["days_since_seen"], 0,
+                         "the newest run in the store IS the run that saw it, however long "
+                         "ago that run was")
+        self.assertFalse(row["quiet"])
+        self.assertGreater(row["days_open"], 7, "control: it is genuinely old")
+
+    def test_a_resolved_item_is_never_quiet(self):
+        self.s.ingest([msg(message_id="<a@x>")], "2026-08-01")
+        for day in ("2026-08-09", "2026-08-10"):
+            self.s.ingest([msg(message_id="<b@x>", subject="other")], day)
+        server.api_resolve(self.s.conn, {}, {"key": "<a@x>", "where": "off-channel"})
+        every = self.s.items("all")
+        rows = {r["key"]: r for r in every["items"]}
+        self.assertTrue(rows["<a@x>"]["state"] == "resolved", "control: it is closed")
+        self.assertFalse(rows["<a@x>"]["quiet"],
+                         "a closed item is supposed to stop appearing in runs")
+        self.assertEqual(every["quiet"], 0)
+
+
+# THE RUNNER MUST BE THE LAST THING IN THE FILE. It used to sit in the middle, and
+# `unittest.main()` exits the process the moment it finishes - so every class defined
+# below it was never even DEFINED on a direct run, let alone executed. Measured
+# 2026-09-08: `python dashboard/test_open_items.py` ran 31 tests and printed OK, while
+# `python -m unittest dashboard.test_open_items` ran 41. The ten it skipped included the
+# only coverage of historical batches and of acknowledged items leaving the list. A
+# passing suite that quietly omits a third of itself is the exact failure this project
+# keeps meeting: the green is real, the work behind it is not.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

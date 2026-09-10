@@ -26,6 +26,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+# CREATE_NO_WINDOW - see the same constant in server.py. A test file is not obviously a
+# windowless context, but this one gets run by the nightly scheduled task as well as by hand,
+# and a scheduled task has no console: every child it spawns would allocate a visible one.
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
 import livecheck                                                   # noqa: E402
 
 def live_suites():
@@ -108,7 +113,7 @@ class EveryLiveSuiteRefusesToRunBlind(unittest.TestCase):
                    EMAIL_DASHBOARD_BASE="http://127.0.0.1:%d" % free_port())
         return subprocess.run([sys.executable, name], cwd=HERE, capture_output=True,
                               text=True, env=env, encoding="utf-8", errors="replace",
-                              timeout=45)
+                              timeout=45, creationflags=_NO_WINDOW)
 
     def test_each_one_exits_2_and_says_why(self):
         for name in LIVE_SUITES:

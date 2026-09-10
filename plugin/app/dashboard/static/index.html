@@ -24,6 +24,9 @@
       <button id="wfBtn" class="btn hdr-chip wf" type="button" hidden></button>
       <button id="openBtn" class="btn hdr-chip open" type="button" hidden></button>
       <button id="hostBtn" class="btn hdr-chip host" type="button" hidden></button>
+      <button id="refBtn" class="btn hdr-chip refused" type="button" hidden></button>
+      <button id="shelfBtn" class="btn hdr-chip refused" type="button" hidden></button>
+      <button id="thinBtn" class="btn hdr-chip refused" type="button" hidden></button>
       <button id="qOpen" class="btn hdr-chip q-open" type="button" hidden></button>
     </div>
     <div class="run-picker">
@@ -119,6 +122,107 @@
         <button class="linkbtn" id="hostShowDone" type="button">show reviewed</button>
       </h2>
       <div id="hostList"></div>
+    </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- WHERE THE GUARD OVERRULED THE TRIAGER.
+       The disposer already recorded every refusal so the stranded scan could tell a correct
+       refusal from a failed disposal; the page never showed them, so the one place an
+       automated decision gets reversed was the one place nothing was said. Grouped by sender
+       and reason, because the shape worth seeing is the REPEAT: one refusal is a judgement
+       call, the same refusal every morning means a standing rule is claiming to do something
+       it cannot do. Hidden entirely when there is nothing to show, like every other chip. -->
+  <div id="refModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Where the guard overruled the sort</h3>
+        <button class="btn modal-x" type="button" data-close="refModal">Close</button>
+      </div>
+      <div class="modal-body">
+    <section class="panel refusals" id="refPanel" hidden>
+      <h2 class="wf-head">
+        <span>🛑 Proposed for the bin, kept anyway <span class="muted" id="refCount"></span></span>
+      </h2>
+      <p class="muted ref-why">
+        Nothing here was deleted. These are messages the sort proposed binning and the
+        disposal guard refused, with the guard's own wording and the date its evidence was
+        taken. A row that keeps coming back is worth reading twice: it usually means a rule
+        and the guard disagree permanently, and the rule has quietly stopped executing.
+      </p>
+      <!-- WHICH WAY IS IT MOVING? The count above is a state and says nothing about
+           direction. Refusals per RUN, with the denominator taken from the runs table so a
+           morning that refused nothing still counts as a morning - and hidden entirely when
+           there were too few runs to draw a line, because "no rate" must never render as
+           "a rate of zero". -->
+      <p class="muted ref-why" id="refTrend" hidden></p>
+      <div id="refList"></div>
+    </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- WHAT THE DISAGREEMENT LEAVES BEHIND.
+       The refusals panel above shows where the guard overruled the sort. This shows the
+       PILE that argument leaves in the mailbox: summary-tier mail past the shelf life a
+       standing rule set for it, still sitting in an inbox. The two belong together - one is
+       the argument, the other is what it costs.
+       The number comes from the only thing here that walks all eight mailboxes end to end
+       (the daily 2-day fetch cannot by definition see mail old enough to retire), and for
+       its whole life it printed to a console and died with the session. -->
+  <div id="shelfModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Past its shelf life, still in the inbox</h3>
+        <button class="btn modal-x" type="button" data-close="shelfModal">Close</button>
+      </div>
+      <div class="modal-body">
+    <section class="panel refusals" id="shelfPanel" hidden>
+      <h2 class="wf-head">
+        <span>🗄️ Past shelf <span class="muted" id="shelfCount"></span></span>
+      </h2>
+      <p class="muted ref-why">
+        Nothing here was deleted. Each of these is summary-tier mail that has outlived the
+        shelf its rule gives it, and is still sitting in a mailbox. The reach line below says
+        how much of the mailbox this answer actually covers &mdash; an incomplete walk finds
+        FEWER overdue items, so a partial scan always reads as better news than a full one.
+      </p>
+      <div id="shelfReach" class="wf-note"></div>
+      <div id="shelfBlocked" class="wf-note"></div>
+      <div id="shelfList"></div>
+    </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- THE HALF OF THE ARGUMENT WITH THE UNCOMFORTABLE ANSWER.
+       The refusals panel is reassuring by construction - everything in it is mail that was
+       NOT deleted. This one lists mail that WAS, ranked by how little precedent stood behind
+       the call. The disposer has always computed it and always printed it to a console that
+       closed with the session; the comment in apply_proposal.py says the number exists to be
+       LOOKED at, because whether these bins ever name something that is not noise is the
+       evidence for an open design question about an evidence floor. -->
+  <div id="thinModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h3>Binned on the least evidence</h3>
+        <button class="btn modal-x" type="button" data-close="thinModal">Close</button>
+      </div>
+      <div class="modal-body">
+    <section class="panel refusals" id="thinPanel" hidden>
+      <h2 class="wf-head">
+        <span>🪶 Thin evidence <span class="muted" id="thinCount"></span></span>
+      </h2>
+      <p class="muted ref-why">
+        These were moved to Trash, and they are recoverable for about 30 days. They are listed
+        because they rest on the least prior evidence of any bin this run &mdash; so if a call
+        this morning was wrong, it is most likely to be one of these. <em>Prior</em> counts
+        bins of the same sender and category on <strong>earlier</strong> runs only, so a
+        first-ever bin reads 0 and is labelled as such.
+      </p>
+      <div id="thinNote" class="wf-note"></div>
+      <div id="thinList"></div>
     </section>
       </div>
     </div>

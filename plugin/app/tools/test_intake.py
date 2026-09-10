@@ -221,9 +221,6 @@ class WindowedMailbox:
                 "messages": [{"uid": str(chosen), "subject": "s"}]}
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class StatusSurvivesItsOwnOutputDirectory(unittest.TestCase):
     """`status` globbed intake-*.json and handed every match to the reporter.
@@ -277,3 +274,11 @@ class StatusSurvivesItsOwnOutputDirectory(unittest.TestCase):
             intake.cmd_status(Args(account=None))
         self.assertIn("owner@example.com", buf.getvalue())
         self.assertIn("1/1", buf.getvalue())
+
+# THE RUNNER MUST BE THE LAST THING IN THE FILE. It used to sit in the middle, and
+# `unittest.main()` exits the process the moment it finishes - so every class defined
+# below it was never even DEFINED on a direct run. Measured across five
+# suites: a direct `python <file>` ran 9 tests here where `python -m unittest` ran 12.
+# A passing suite that quietly omits part of itself is a green covering work it did not do.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

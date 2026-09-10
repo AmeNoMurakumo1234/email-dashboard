@@ -810,6 +810,13 @@ def cmd_find(args):
             if typ != "OK" or not data or not data[0].split():
                 continue
             uid = data[0].split()[-1]
+            if args.locate:
+                # Answer WHERE it is and nothing more. The disposer needs a uid to move mail
+                # and must never read a body to get one - so the lookup it depends on stops
+                # here, before the FETCH, rather than trusting a caller to discard the bytes.
+                conn.logout()
+                print(json.dumps({"found": True, "mailbox": box, "uid": uid.decode()}))
+                return 0
             typ, fetched = conn.uid("FETCH", uid, "(BODY.PEEK[])")
             if typ != "OK" or not fetched or not isinstance(fetched[0], tuple):
                 continue
@@ -878,6 +885,8 @@ def main():
     fi.add_argument("--all-folders", action="store_true",
                     help="also search beyond INBOX and Trash")
     fi.add_argument("--out")
+    fi.add_argument("--locate", action="store_true",
+                    help="report {found, mailbox, uid} only - never fetch the body")
 
     s = sub.add_parser("send")
     s.add_argument("--account", required=True, help="sending gmail account")

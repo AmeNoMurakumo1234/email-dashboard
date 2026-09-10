@@ -1,5 +1,395 @@
 # Changelog
 
+## 0.29.18 — the refusals panel counted a pile that can only grow, and called that a direction
+
+The refusals panel could say how big the pile of guard refusals was and how long each
+disagreement had been running. Neither is a direction — and `disposal_refusals` is append-only,
+so the total can only ever rise. A count that cannot take the other value cannot be evidence for
+the value it takes: it would read "still growing" on the morning after the rules were fixed.
+
+The panel now carries **refusals per run**, the number that *can* fall, with the latest half of
+the window against the half before it — and it says in words that the total above it can only
+rise, so nobody reads the total as a trend.
+
+**The denominator is the whole feature.** A run that refuses nothing writes no refusal row, so
+counting run dates in the refusals table divides by the number of *bad* mornings and yields a
+rate that can never drop below 1.0 however many clean days pass. The denominator comes from the
+`runs` table — the population, never the events. And under two runs in the window it returns
+nothing rather than "0.0 per run": no rate is not a rate of zero.
+
+Worth recording because it caught its own author: the panel's first live reading showed the rate
+roughly halving over the window on a store whose raw count had risen every single day.
+
+## 0.29.17 — the open list could say how old an item was, never that nothing would raise it again
+
+`days_open` ages an item everyone is carrying and an item nobody has looked at in weeks at the
+same rate. `/api/open-items` now derives `days_since_seen` and a `quiet` flag from `last_seen`,
+with a header count and a row badge reading "no new mail in Nd".
+
+The honest scope, because the first draft claimed more: `last_seen` advances only when the
+message itself reappears in a run's mail, and the fetch window is short, so a non-repeating item
+goes quiet after a few days by construction. The flag is evidence about the **sender** — nothing
+is arriving to remind you — and the badge and tooltip claim exactly that and nothing about what any
+report said. The threshold sits four sweeps past the fetch window rather than being picked.
+
+### Two instruments reporting success for work they did not do
+
+`if __name__ == "__main__": unittest.main()` sat in the *middle* of five test files. `main()` exits
+the process, so every class below it was never defined on a direct run — dozens of tests silently
+skipped under a green OK. The runner now goes last in all five. Nothing real was hiding, but
+nothing was being checked either, and from outside those are the same.
+
+`rule_host.py` (0.29.16) printed stored subjects with no console-encoding guard, so one emoji
+aborted `--list` on a cp1252 console. Guarded.
+
+## 0.29.16 — the guard against unexamined mail called a three-day backlog "already known"
+
+`check_new_hosts.py` ended by printing what it had just recorded: "N new pairing(s), M already
+known". *Already known* names a pairing's **storage** state and a reader takes it for its
+**review** state — so the instrument that exists to keep unexamined mail from slipping past was
+describing an unexamined pile in words that read as reassurance. The scan's window is one day;
+"is anything unreviewed" was never a one-day question.
+
+`open_backlog()` reports the standing count of unruled pairings and how much of it predates this
+run, printed whether or not the scan saved anything — a quiet day is exactly when a pile goes
+unnoticed.
+
+Also new: `dashboard/rule_host.py`. A verdict could only be given from the button on the page,
+which is right for a person and wrong for an agent whose job is to rule on the day's findings.
+One implementation, reachable from the browser and the command line.
+
+## 0.29.15 — the panel that accounts for deletions was listing mail that was never deleted
+
+The KPI row had no bucket for the guard's refusals, so on any day something was refused the tiles
+came up short. That was the smaller half. `api_run` built its "trashed" list from
+`{"trashed", "would_trash"}` — so the drill-down behind the tile labelled *what I binned, and
+why* listed messages still sitting in the inbox where the guard left them. Over-claiming, inside
+the one panel built to be the paper trail for throwing mail away.
+
+`trashed` now means trashed. Refused mail comes back as its own `held` list with its own count,
+derived at read time from the run's rows. The tile is amber, not red, and appears only on days
+that had a refusal: red reads as an error to fix, which is the nudge toward forcing a refusal
+through that a refusal exists to prevent. Nothing about what may be binned changed.
+
+## 0.29.14 — the guard's evidence counts one label and its sentence claims the sender
+
+The guard refuses a bin with *"this sender under 'X' has N kept or surfaced message(s) on record"*.
+N is filtered to the category being proposed; the sentence is not. The quantity a reader takes
+from it — how much this sender was kept — is not the quantity it reports. True, and aimed at the
+wrong thing: the kind of reading re-measurement confirms rather than catches.
+
+The panel now prints both numbers — keeps under this label, keeps under every other — and names
+the other labels, derived at read time so it holds for refusals already on record. It deliberately
+does **not** widen what the guard counts: that changes what may be binned, and any exemption
+written later should key on the sender rather than the sender-under-a-label or it inherits this
+same scoping.
+
+## 0.29.13 — the disposer knew which bins stood on nothing, and told a console that closes
+
+`apply_proposal` has always worked out how much prior evidence stands behind each bin it clears
+and printed the thinnest ones — printed rather than enforced, so a person can look. It printed
+to a console that closes with the session. The refusals panel only ever shows mail that was *not*
+deleted; this is the other half of that argument, the one with the uncomfortable answer.
+
+Now a panel, derived at read time from the store. One counting correction that mattered: the
+CLI's "prior" includes the run's own row, so a first-ever bin printed as "1 prior" — fine for a
+threshold, false under a caption, and it would have hidden exactly the row worth seeing. The
+panel counts strictly earlier runs, a first-ever bin reads 0 and says so, and the response
+states which convention is in force. Count and denominator travel together ("N of M binned").
+
+## 0.29.12 — the past-shelf pile read as a backlog when every item in it was already refused
+
+A bare count of past-shelf mail reads as work nobody got round to. The same number can mean the
+disposal guard has already refused to release every item in it. Those are opposite claims about
+whose move it is, and the panel rendered them identically — a queue and a deadlock look the same.
+
+The panel now marks which items are **blocked**, with the date the standing refusal was recorded
+and the guard's own stated reason, grouped by the rule that set the shelf. It reports what the
+guard *did* — a row it wrote — and never predicts what it would do, which would put a second,
+drifting copy of the guard's reasoning on the page. Unmarked means "the guard has not been
+asked", never "the guard would allow it", and the panel says so. Both sides of the join go
+through one normaliser, because free-text sender matching across two tables is where a case or
+whitespace difference fails silently and the answer comes back smaller and more reassuring.
+
+## 0.29.11 — a label could flip the guard's verdict in silence
+
+The guard re-derives its verdict from the store, but one input is the category the triage step
+wrote. The same message can go in under a money label and be **refused** as protected, then under
+a promo label and be **cleared** and binned — and nothing said the input changed, only the
+outcome. A refusal the triager can dissolve by relabelling is only as strong as that triager's
+labelling discipline, which is what the guard exists not to depend on.
+
+`apply_proposal` prints a **LABEL FLIP** block when both the label and the verdict changed since
+the last run that put that message to the guard. It refuses nothing and changes no verdict; a
+blocking version would fire on honest corrections. Silence was the defect, so the fix ends the
+silence.
+
+Stated limit: once a refused message is finally binned its refusal row is deleted, so the record
+keeps no trace that it was ever refused. Detection therefore runs *before* the disposal that
+erases the previous verdict, and a backward scan reporting zero is a fact about the record, not a
+clean bill of health.
+
+## 0.29.10 — one sender lived in the store under two names
+
+A long mail header is legally folded across lines, and a reader is meant to join it back. Ours
+did not, so the same sender reached the store under two spellings differing only by a line break
+inside the value. Nothing errored; every count stayed internally consistent; every view keyed on
+the sender string reported a number smaller than the truth. It surfaced on the row where it hurt
+most — the refusals panel's record of a standing rule that had stopped executing split into a
+"runs=8" row and a "runs=1" twin, resetting the clock and dropping the flag.
+
+Unfolded at both doors: `apply_proposal.normalise_senders` (journal and refusal rows) and
+`ingest.normalise_messages` (the messages table). Ingest was already unfolding the subject four
+lines away and had never been given the sender. Never key on a string the transport is free to
+reformat. Senders split by **case** alone are deliberately not touched — case-folding a display
+name sits upstream of a deletion decision and needs its own evidence.
+
+## 0.29.9 — the header was pushing the scoreboard off the page, and the heatmap was never the cause
+
+The phone-width sideways scroll had been diagnosed twice as the heatmap — the widest element on
+the page, which was true and was not the question. A clipped child does not extend the scroll
+box, and the heatmap's wrapper already clips it.
+
+At an honestly-reporting viewport exactly one element's right edge equalled the page's
+`scrollWidth`: the score panel, whose parent is a flex `<header>` with no `flex-wrap`. The row
+could not break, so its last child went off the right edge and the whole page scrolled behind it.
+The header now wraps and the title may shrink. Proven both ways — forcing `nowrap` back restores
+the overflow, and shrinking the heatmap to nothing moves `scrollWidth` by nothing.
+
+## 0.29.8 — the shelf-life answer reached the page, and it carries its own reach
+
+A retention scan is the only thing that walks a mailbox end to end — the daily fetch cannot by
+definition see mail old enough to retire — and its answer used to die with the console. The page
+now has a **Past shelf** panel (`/api/retention-shelf`), grouped by the rule that set the shelf,
+because "which of my retention rules has stopped executing" is the question a person has.
+
+The part that needed care is the empty state. A scan that loses a mailbox to throttling, or stops
+at its own time budget, walks less and therefore finds *fewer* overdue items — a broken scan and
+a clean one produce the same reassuring small number. So the reach is stored **with** the answer,
+and three states an empty list used to collapse are distinguishable: nothing is past shelf, the
+scan was partial, and nobody has ever asked. A positive-control run is recorded and never served.
+
+Honest scope: the schema (`retention_scans`, `retention_shelf`) and the panel ship; the reference
+scanner that writes them is part of the maintainer's routine, not this plugin. An install that
+never runs one sees "nobody has ever asked" — not a clean bill of health.
+
+## 0.29.7 — a refusal that kept resetting its own clock, and a journal that forgot who wrote
+
+The refusals panel exists to show the repeat: one refusal is a judgement call, the same refusal
+every morning is a rule and a guard that disagree permanently. It grouped by `(sender, reasons)`,
+and the guard's reason text embeds a keep **count** that grows — so every time the evidence ticked
+up the row split and the persistence measure reset. The count grows fastest for the senders the
+guard refuses most, so the panel fragmented hardest exactly where the disagreement was most
+entrenched.
+
+Now grouped by `(sender, category)` — the slice the guard reasons about — carrying the newest
+reason text, `reason_variants` so the collapse is visible rather than absorbed, and `runs`
+(distinct dates), which is what "every morning" actually means.
+
+Also: the run builder's `from`/`date` aliases reached every *reasoning* path in `apply_proposal`
+and none of its *recording* paths, so a run could bin the right mail and write journal lines with
+`-` where the sender belongs. Fixed by normalising at the door — a recording path added later
+cannot miss a normalisation that already ran. (`tools/test_sender_alias.py`.)
+
+## 0.29.6 — one acknowledgement made on chatter could silence a family emergency forever
+
+A thread acknowledgement is keyed on the subject *shape*, and for social-network comment
+notifications that shape never varies. A single ack made on ordinary chatter therefore silenced a
+person's entire future stream, on a key that knows nothing about what any later message says.
+Correct for chatter — and wrong for the one case an always-escalate rule exists to catch.
+
+A row that is **both** family **and** already judged action-needed is no longer suppressed by a
+thread ack. Deliberately that narrow: it fires essentially never on routine mail. A *message* ack
+is untouched at any importance — it says "I have seen this email" and infers nothing about mail
+that has not arrived. The three sites that suppress an acknowledged item now share one
+implementation; three copies of the rule was the actual hazard.
+
+Also: `.gitignore` did not match a backup that renames the extension, so a dated `.db.<date>.bak`
+copy of the mail store was committable. Ignored now.
+
+## 0.29.5 — acknowledging one message was silencing the whole series
+
+`_already_acknowledged` matched account+subject against *every* message-scoped ack, including
+ones stored under a Message-ID of their own — collapsing `message` scope ("I have seen this one")
+into `thread` scope ("silence this recurring series"), the single distinction the two scopes
+exist to draw. It bites hardest on a series whose subject is constant by design: a portal that
+mails "you have a new secure message" every time, so the subject *is* the series. One ack then
+suppressed a genuinely new message under a different Message-ID, and would have gone on doing so.
+
+The content fallback now applies only to acks that have no Message-ID of their own. Thread acks
+are untouched — silencing a series is what they are for.
+
+## 0.29.4 — the sale you lose by waiting was sorted to the bottom
+
+The Steam panel ranked by discount size, so a sale ending today rendered below one running three
+more weeks; the end date was on the tile only as a grey range you had to do the arithmetic on.
+Sorted by deadline (soonest first), discount breaks ties only, unknown end dates sink rather than
+being guessed. A badge inside the three-day window — ends today, ends tomorrow, N days left — and
+nothing outside it, because a badge on everything is a badge on nothing. The expiry test and the
+new countdown share one notion of "today", so they can never disagree about a boundary.
+
+## 0.29.3 — a fix written for one branch does not reach its sibling
+
+The disposer already knew that "the guard said yes and nothing moved" must shout and fail — in
+the branch that handles a message it cannot *locate*. That never reached the branch four lines
+up, where a message the guard cleared fails to *move*: one FAILED line per account, exit 0. A run
+that disposed of nothing reported success to anything checking the status code. Transport
+failures now name each account, its message count and its error, and exit non-zero; the healthy
+path still exits 0.
+
+Also: the workflow panel could not tell an old item from a new one. The horizon protects the
+panel's credibility only for items that *have* a date; a dateless item is actionable immediately,
+so nothing ever ages one out. The server now returns `days_waiting` and the card reads "waiting N
+days" — computed server-side beside `days_until`, because re-deriving a rule in the client is how
+two spellings of it drift apart. Nothing is hidden or expired; that call is yours.
+
+## 0.29.2 — a budget cannot buy a read that costs more than the whole budget
+
+The workflow endpoint had exactly one source: a per-message fetch in its own subprocess. When a
+mailbox is throttled badly enough that connecting alone costs more than the whole-request budget,
+no share of that budget can succeed however fairly it is divided — the floor is above the ceiling.
+
+The bodies were already local. `body_text` has been carried on ingest for exactly this reason,
+and the endpoint had never asked. Reading the stored copy gives complete reach on every call,
+whatever the mailbox is doing. But a stored body cannot vouch for a **sender** — the store keeps
+bodies, not headers — so DKIM is not failing there, it is unaskable, and stored items render
+their links as text with the reason said out loud. That trade is right for an appointment weeks
+away and wrong for a day-of join link whose whole value is being pressable. So the budget changed
+jobs: the store buys reach for free, and the budget is spent only on items that are actionable
+*and* in-domain — the few where a verified sender changes what the page can do.
+
+**Reach is guaranteed; clickability is best-effort and says so.** (0.29.0 and 0.29.1 were never
+released.)
+
+## 0.28.9 — fair across items is not fair across accounts
+
+The budget was divided by the number of candidates, but the thing that fails is an **account** —
+and an account holding every candidate collects every share. A throttled mailbox was handed the
+whole budget anyway, spent it on reads that could not finish, and emitted one error per
+candidate, which reads as many problems when the truth is one.
+
+Consecutive timeouts on one account now condemn it for the rest of the request; a share too small
+to fund a read is not issued at all and says "not attempted" rather than blaming a mailbox for a
+budget it was never given; and the response carries `read: N` and names the stalled account, so
+`outstanding: 0` can never be mistaken for a quiet morning. The streak clears whenever the
+subprocess comes back at all, not only on success — a run of legitimate "no longer on the server"
+answers proves the mailbox answered. This does not make a throttled box readable; it makes the
+failure cheap, attributed, and impossible to read as an all-clear.
+
+## 0.28.8 — a budget that bounds the whole still lets one item spend all of it
+
+The whole-request budget bounded the request and said nothing about how it was **shared**: each
+read was handed everything still on the clock, so the first message against a slow mailbox
+consumed essentially the whole budget and every candidate behind it was reported as "the budget
+ran out". Worse than the hang it replaced in one way — the response arrives, so it looks like an
+answer. Each read now takes at most a fair share of what is left, recomputed every iteration so
+time given back by fast reads is redistributed. The reach block names the **mailbox**, because
+when a box goes slow every one of its messages fails identically.
+
+## 0.28.7 — a per-item timeout is not a budget
+
+Every subprocess in the workflow endpoint had a 45-second timeout, which reads as bounded. There
+can be up to 25 of them, so nothing bounded the request as a whole — and a browser fetch that
+takes minutes has not rendered slowly, it has rendered nothing, including the reach block whose
+entire job is to say "I could not read these". The endpoint now takes a whole-request wall-clock
+budget (default 25s, `?budget=N`) and reports every message it did not reach **by name**, because
+a budget that drops the remainder silently converts a hang into a fast, quiet, wrong all-clear.
+
+## 0.28.6 — a panel that collects its failures and then hides them is still a false all-clear
+
+The workflow endpoint has always refused to swallow a read failure: every message it cannot open
+goes into an `errors` array. The **page** threw that array away. On a slow-mailbox morning the
+endpoint honestly returned zero outstanding, the panel printed "nothing right now", and the chip
+— which hides itself at zero — disappeared. Indistinguishable from a quiet day, in the space
+between two files that each review clean on their own.
+
+Now an amber reach block names the count, the grouped reasons and every unread subject; the
+header reads "(nothing readable — N of M could not be read)"; and the chip stays on screen
+carrying "N unread" instead of vanishing. A count of zero from a check that could not read is not
+a count of zero. The control leg matters as much as the alarm: a genuinely quiet morning still
+renders chip-hidden with no block at all.
+
+## 0.28.5 — a guard that cannot flash, and a gate that says what it did not look at
+
+Every spawn in a file that can run without a console now passes `CREATE_NO_WINDOW` — the server,
+the live check, the install test — so a scheduled or background run cannot pop a console window
+and steal focus. Measured with a three-way control rather than assumed: an unguarded `python.exe`
+child reproduces the flash, the guarded one does not, and a `pythonw.exe` parent never flashed in
+the first place — so the server's own sites were latent, not live, and that is said plainly
+rather than crediting the fix with a cure it did not deliver.
+
+The refusals panel now carries **both** ends of the guard's evidence. A refusal whose newest
+evidence lands on the run that proposed the bin is structural, not a judgement call: the sweep
+manufactures its own counter-evidence minutes earlier, so the keep count can never fall. Flagged
+as `self_feeding`, computed at read time.
+
+And the export gate was giving itself a free pass: it scanned the hand-maintained files in the
+public repo but skipped a *missing* one silently, so a build to a fresh target checked none of
+them and still printed GATE PASSES. It now prints its reach beside the verdict.
+
+## 0.28.4 — a refusal that cannot name its rule hides a rule that stopped running
+
+The guard refused to bin a sender locked to auto-trash weeks earlier, and its whole explanation
+was *"sender is on your protected list"*. True. Protected entries match as a bare substring over
+the entire sender string, and one entry — present for a bank — matched an unrelated company's
+sending domain on five shared letters. A confirmed rule had silently never executed. It fails
+closed, which is the safe direction; the cost is that a rule which does not run is
+indistinguishable from one that runs and finds nothing.
+
+Fixed the **explanation**, not the match: the refusal now reads *"sender matches protected list
+entry: 'x'"* — a claim a reader can falsify in seconds. The tempting repair, a word boundary,
+would stop entries meant to match inside a run-together domain and fails open; a test leg exists
+whose only job is to fail if someone makes that change.
+
+And the larger half: those refusals lived only in a table two command-line tools read. The one
+place an automated decision gets **reversed** was the one place the page said nothing.
+`/api/refusals` plus a quiet header chip now show them grouped, with the guard's own wording and
+the date its evidence was taken, flagging a refusal repeating across days as a rule that may not
+be executing. Read-only on purpose — an "apply anyway" button would hand back through the UI
+exactly what splitting proposing from disposing exists to prevent.
+
+## 0.28.3 — a refusal and a failure stop sharing one outcome
+
+A `would_trash` message still in the inbox can be there for two reasons: the guard **refused** it
+(correct — that is the intended resting state) or the disposal **never happened** (the defect a
+stranded check exists to catch). The store recorded neither, so any such check was dominated by
+correct refusals — an alarm that is nearly all false positives does not merely add noise, it
+teaches the reader to skim the one panel a real miss would land in.
+
+`apply_proposal` now writes its verdict down in the same call that reaches it (`disposal_refusals`,
+on dry runs too) and clears the note once a message actually moves, so an explanation can never
+outlive the thing it explains. A message with no recorded reason is reported as *unexplained*,
+never as a proven defect — the table postdates the scanner. The refusal also records the **date
+range** of the keeps it rests on, which makes two invisible shapes legible: age-blind (a
+retirement refused on the strength of a keep made minutes earlier in the same run) and
+ruling-blind (evidence generated under a default that a later ruling reversed, arguing for the
+superseded default forever).
+
+Caught while building it: adding `run_date` to the history query put it in both rungs of the
+fallback ladder, so a store without that column failed every rung and the guard had no memory —
+which clears everything. That fails **open**, directly under the comment titled DEGRADE, DO NOT
+VANISH. A third rung asks only for columns that have always existed.
+
+## 0.28.2 — the guard said yes and nothing moved
+
+A proposal written with no uids cleared the guard on every message, moved zero of them, printed
+one parenthetical and exited 0. It read as a clean run — and every `would_trash` row ever
+recorded was still in the inbox, some of them old enough to have aged past the fetch window, so
+no future sweep would ever have looked at them again.
+
+`apply_proposal` now resolves a missing uid from the Message-ID before giving up, **inbox-only**:
+a hit in Trash means the message is already disposed, and moving it again would journal a
+deletion the run did not perform. The lookup reads no body — the new `mailtool find --locate`
+stops at the SEARCH and never issues the FETCH — so the disposer keeps its property of taking no
+instruction from anything a sender wrote. A cleared message it still cannot locate names itself
+and exits non-zero. Silence was the defect, not the miss.
+
+Also: the export gate passed prose it should have caught. Its date rule fired on a short verb
+list and "on" was not in it, so narrative about a real mailbox was cleared for a public repo.
+Flagging every ISO date was tried first and was worse — dozens of files, almost all synthetic
+fixture dates and release stamps — and a gate that fires on things that are fine is one people
+route around. The verb list was widened instead, which then caught two leaks already shipped.
+
 ## 0.28.1 — guard the action, not the sender
 
 The attention-path guard added in 0.28.0 was placed at the top of the block, so it fired on

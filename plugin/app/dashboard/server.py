@@ -10,13 +10,14 @@ import argparse
 import collections
 import email.utils as email_utils
 import json
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import os
 import re
 import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -34,6 +35,18 @@ from categorize import LABELS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, "static")
+
+# CREATE_NO_WINDOW. This server runs under `pythonw` as a 24/7 login-started service, so it
+# has NO console of its own - and on Windows a console-less parent that spawns a console
+# program (python, git, cmd) makes the OS allocate a VISIBLE console for the child. It
+# appears, steals keyboard focus, and vanishes. Every spawn in this file gets the flag; the
+# owner was chasing that flicker across three machines before it was traced here.
+#
+# Two things that look like the fix and are not: DETACHED_PROCESS only pushes the flash one
+# level down (the child is then console-less itself), and the flag does NOT inherit, so
+# guarding a launcher does nothing for what the launcher spawns. capture_output does not
+# help either - that redirects the streams, and the console is a separate object.
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -139,13 +152,31 @@ def api_run(conn, q):
     carried_n = sum(1 for m in surfaced_all if m.get("carried"))
     surfaced = surfaced_all if show_carried else [m for m in surfaced_all
                                                  if not m.get("carried")]
-    trashed = [m for m in messages if m["disposition"] in db.DISPOSABLE]
+    # REFUSED IS NOT BINNED, and this list is the paper trail for deletions.
+    #
+    # `db.DISPOSABLE` is {"trashed", "would_trash"} - the set of things the disposer may be
+    # ASKED about. Using it here made the drill-down behind the "What I binned, and why" tile
+    # list every message the guard REFUSED alongside the ones it moved, so the list ran longer
+    # than the tile that opened it. Refused mail is still in the inbox where the guard left it,
+    # which means the panel was claiming deletions a reader can see did not happen.
+    #
+    # That is the over-claiming direction, and it is the worse one. The ingest-before-apply
+    # and re-ingest defects both had the record UNDERSTATE what was done, which a glance at
+    # the mailbox corrects. This said mail was thrown away inside the one panel built to
+    # account for throwing mail away.
+    #
+    # Refused mail is REPORTED rather than dropped - a quieter panel would be the same lie in
+    # the pleasant direction - so it gets its own list and its own tile. Derived at read time
+    # from the run's own rows: no schema change, and nothing here decides what may be binned.
+    trashed = [m for m in messages if m["disposition"] == "trashed"]
+    held = [m for m in messages if m["disposition"] == "would_trash"]
     return {"run_date": date,
         "accounts_as_of": accounts_as_of, "run": run, "accounts": accounts,
-            "surfaced": surfaced, "trashed": trashed,
+            "surfaced": surfaced, "trashed": trashed, "held": held,
             "carried_hidden": 0 if show_carried else carried_n,
             "totals": {"fetched": run.get("fetched", 0), "trashed": run.get("trashed", 0),
-                       "kept": run.get("kept", 0), "otp": run.get("otp", 0)}}
+                       "kept": run.get("kept", 0), "otp": run.get("otp", 0),
+                       "held": len(held)}}
 
 
 def api_trash_stats(conn, q):
@@ -453,6 +484,55 @@ def acked_message_keys(conn):
     return keys
 
 
+FAMILY_CONCEPT = "family & people"
+
+
+def ack_covers(row, acked_msg, acked_thread):
+    """Is this row covered by an acknowledgement? ONE implementation, three call sites.
+
+    The three places that suppress an acknowledged item - the row annotation, the calendar's
+    outstanding count and the open-items panel - each used to spell this out for themselves.
+    That is the same two-spellings-of-one-concept trap this file already records for the
+    category labels and the ack keys, and here it would drift silently: a carve-out added to
+    one site and not the others gives an item that is hidden on one screen and shouting on
+    the next.
+
+    A THREAD ACK CANNOT SILENCE A FAMILY EMERGENCY. A thread key is a subject shape, and for
+    social-network comment notifications that shape is a CONSTANT - every comment a person
+    makes arrives as "<Name> commented on a post". So one ack on ordinary chatter silences
+    that person's whole future stream, permanently, on a key that knows nothing about what
+    any later message says. A handful of such acks can hold down a long tail of rows from
+    people on the always-escalate list, and nothing on screen says so.
+
+    That is correct for chatter and it is what the acknowledgement was for. It is wrong for
+    the one case the family rule is written about - a relative in actual trouble - because
+    the mechanism cannot tell the two apart, while the person acknowledging reasonably
+    believes only the chatter was silenced. So a row that is BOTH family and already judged
+    `action-needed` escapes a thread ack. It is deliberately that narrow: family comment
+    rows are filed action-needed only on a genuine escalation, so this fires essentially
+    never on routine mail and cannot become a new source of noise.
+
+    A MESSAGE ack is untouched, at any importance. That one says "I have seen THIS email",
+    which means exactly what it says and infers nothing about mail that has not arrived yet.
+    """
+    # Callers hand this both plain dicts and sqlite3.Row, and Row has no .get() - so field
+    # access goes through one accessor rather than each call site converting (a missed
+    # dict(r) would raise only on the path that happens to be exercised).
+    def f(name):
+        if isinstance(row, dict):
+            return row.get(name)
+        return row[name] if name in row.keys() else None
+
+    ids = ack_identities("message", f("message_id"), f("sender"), f("subject"), f("account"))
+    if any(i in acked_msg for i in ids):
+        return True
+    kt = ack_key("thread", None, f("sender"), f("subject"), f("account"))
+    if kt not in acked_thread:
+        return False
+    escalated = (f("concept") == FAMILY_CONCEPT and f("importance") == "action-needed")
+    return not escalated
+
+
 def annotate_acks(conn, msgs):
     """Attach the ack keys and current state to each row, so the client never guesses."""
     acked_msg = acked_message_keys(conn)
@@ -464,11 +544,22 @@ def annotate_acks(conn, msgs):
         kt = ack_key("thread", None, m.get("sender"), m.get("subject"),
                      m.get("account"))
         m["ack_key_message"], m["ack_key_thread"] = ids[0], kt
-        m["acked"] = bool(any(i in acked_msg for i in ids) or kt in acked_thread)
+        m["acked"] = ack_covers(m, acked_msg, acked_thread)
     return msgs
 
 
 SIGNIN_WINDOW_DAYS = 30
+
+# SEVEN DAYS, chosen against the FETCH WINDOW rather than out of the air. The daily sweep
+# fetches two days of mail, so an item stops appearing in runs about three days after it
+# arrives whether or not anyone is handling it - a threshold of 3 would fire on every row
+# and mean nothing. Seven is four sweeps past that floor: long enough that "the sender is
+# still reminding you" has clearly stopped being true.
+#
+# Deliberately NOT the same line as the 14-day `stale` flag. Stale is about the item's own
+# age; this is about whether anything outside this list will raise it again. An item can be
+# quiet on day 7 and not stale until day 14, and the quiet one is the one that vanishes.
+QUIET_AFTER_DAYS = 7
 
 
 def api_signins(conn, q):
@@ -640,6 +731,317 @@ def api_new_hosts(conn, q):
     return out
 
 
+def api_refusals(conn, q):
+    """Where the disposal guard OVERRULED the triager, and on what evidence.
+
+    These verdicts already existed - the disposer records every refusal so the stranded scan
+    can tell a correct refusal from a failed disposal - but they lived only in a table two
+    command-line tools read. So the one place in this system where an automated decision is
+    reversed was the one place the page said nothing about.
+
+    That matters in both directions and the second is the interesting one:
+
+      * a refusal is REASSURING. It is the guard doing its job, and seeing it is how the
+        person knows the split between proposing and disposing is real rather than decorative.
+      * a refusal is also where a STANDING RULE STOPS EXECUTING. When the triager keeps
+        proposing what the guard keeps refusing, some rule is claiming to do something it
+        cannot do - and nothing anywhere announced that. A rule that quietly never runs is
+        indistinguishable from one that runs and finds nothing.
+
+    So this groups and counts, because the shape worth seeing is the REPEAT: one refusal is a
+    judgement call, the same refusal every morning is a rule and a guard that disagree
+    permanently.
+
+    IT GROUPS BY (sender, category), AND IT USED TO GROUP BY (sender, reason) - WHICH BROKE
+    THE ONE THING IT IS FOR. `reasons` is the guard's rendered explanation, and it embeds a
+    COUNT: "has 13 kept or surfaced message(s) on record" becomes "has 16 ..." as that sender's
+    history grows. Same disagreement, different grouping key - so the row SPLIT every time the
+    evidence ticked up, and the persistence measure reset with it. A daily-digest sender refused
+    on five separate mornings across two and a half weeks showed up as a three and a one.
+
+    The failure direction is the bad one. A keep count only ever grows, and it grows fastest
+    for the senders the guard refuses most - so the panel fragmented hardest exactly where the
+    disagreement was most entrenched, reporting a confident smaller number and saying nothing.
+    Two open owner questions are argued from this panel, so understating persistence understated
+    the evidence for the question being asked.
+
+    (sender, category) is the right key because it is the slice the GUARD reasons about, and the
+    same slice `self_feeding` already reads evidence from. Collapsing further, to the sender
+    alone, would merge one storefront's SALE refusal with its RECEIPT refusal - two different
+    things, and one wrong number traded for another. `reasons` now carries the NEWEST text (the current
+    state of the disagreement), `reason_variants` says how many distinct explanations were
+    collapsed so the growth stays visible rather than absorbed, and `runs` counts distinct run
+    dates - a truer reading of "every morning" than a message count that rises and falls with
+    how many items happened to arrive that day.
+
+    `days` bounds the window; `evidence_from` is passed straight through, so a refusal resting
+    on keeps that predate a later ruling is visible as such rather than having to be inferred.
+
+    `evidence_to` IS THE OTHER END, AND IT IS THE ONE THAT ANSWERS A DIFFERENT QUESTION.
+    `evidence_from` is the OLDEST keep behind a refusal, which reads as "this rests on old
+    evidence" - reassuringly stale. The newest keep is the one that decides whether the rule
+    can EVER fire. When it lands on the same run that proposed the bin, the run has just
+    manufactured the counter-evidence for its own proposal: the sender is summary-tier, so
+    every sweep keeps today's issue minutes before proposing last week's, and the keep count
+    the guard reasons about can never fall. That is `self_feeding`, and it is a different
+    finding from `days_running` - a repeat says a rule and a guard disagree, this says the
+    disagreement is structural and no amount of waiting resolves it.
+
+    It is computed at READ time from the messages table rather than stored, so it is true for
+    refusals already on record instead of only for ones recorded from today onward. Nothing
+    here changes a verdict; the guard keeps the right to overrule the triager.
+    """
+    try:
+        days = max(1, min(365, int((q.get("days") or ["30"])[0])))
+    except ValueError:
+        raise ValueError("days must be a number")
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    items = rows(conn.execute(
+        "SELECT sender, category, COUNT(*) AS messages, "
+        "       COUNT(DISTINCT run_date) AS runs, "
+        "       COUNT(DISTINCT reasons) AS reason_variants, "
+        "       MIN(run_date) AS first_run, MAX(run_date) AS last_run, "
+        "       MIN(evidence_from) AS evidence_from "
+        "FROM disposal_refusals WHERE run_date >= ? "
+        "GROUP BY sender, category ORDER BY messages DESC, last_run DESC", (cutoff,)))
+    for it in items:
+        # THE NEWEST reasons text, fetched per group rather than grouped on. See the note
+        # above: grouping ON it is what split the row. `IS` (not `=`) so a refusal recorded
+        # with a null sender matches its own group instead of silently matching nothing.
+        newest_why = conn.execute(
+            "SELECT reasons FROM disposal_refusals "
+            "WHERE sender IS ? AND category IS ? AND run_date >= ? "
+            "ORDER BY run_date DESC, refused_at DESC LIMIT 1",
+            (it.get("sender"), it.get("category"), cutoff)).fetchone()
+        it["reasons"] = [r for r in ((newest_why["reasons"] if newest_why else "") or "")
+                         .split("\n") if r.strip()]
+        it["days_running"] = _days_between(it.get("first_run"), it.get("last_run"))
+        newest = conn.execute(
+            "SELECT MAX(run_date) AS d FROM messages "
+            "WHERE sender = ? AND category = ? AND disposition IN ('kept', 'surfaced')",
+            (it.get("sender"), it.get("category"))).fetchone()
+        it["evidence_to"] = newest["d"] if newest else None
+        # THE GUARD'S EVIDENCE IS LABEL-SCOPED, AND THE WORDING DOES NOT SAY SO (2026-09-05).
+        # Its refusal reads "this sender under 'X' has N kept or surfaced message(s) on
+        # record", and both the count above and the guard's own query are filtered to the
+        # category being proposed. So N is not "how much this sender was kept" - it is "how
+        # much this sender was kept UNDER THIS LABEL", which is a materially weaker claim
+        # than a reader takes from it.
+        #
+        # Measured, which is why this is here: Q43 recorded TWO bad keeps for one Facebook
+        # sender (08-25, 08-26), and today's refusal on that same sender cited ONE. Both rows
+        # are in the store. They differ only because the 08-25 keep is filed `fb-tier-c` and
+        # the 08-26 keep is filed `social`. That makes Q43 (keeps blocking a rule) and Q44 (a
+        # label silently deciding whether mail gets binned) the same defect from two sides.
+        #
+        # So report BOTH numbers and let the gap be visible. This changes no verdict and no
+        # schema - it is derived at read time, like the rest of this panel - and it
+        # deliberately does not "fix" the scoping, because widening what the guard counts
+        # would change what may be binned, which is the owner's call (Q43/Q44).
+        in_cat = conn.execute(
+            "SELECT COUNT(*) c FROM messages "
+            "WHERE sender = ? AND category IS ? AND disposition IN ('kept', 'surfaced')",
+            (it.get("sender"), it.get("category"))).fetchone()["c"]
+        other = rows(conn.execute(
+            "SELECT category, COUNT(*) AS c FROM messages "
+            "WHERE sender = ? AND category IS NOT ? AND disposition IN ('kept', 'surfaced') "
+            "GROUP BY category ORDER BY c DESC",
+            (it.get("sender"), it.get("category"))))
+        it["keeps_in_category"] = in_cat
+        it["keeps_other_labels"] = sum(r["c"] for r in other)
+        it["other_labels"] = [r["category"] for r in other if r["category"]]
+        # Only a refusal that actually RESTS on keeps can be self-feeding. A protected-list
+        # refusal records no evidence date and must not be labelled with someone else's.
+        it["self_feeding"] = bool(
+            it.get("evidence_from") and it["evidence_to"] and it.get("last_run")
+            and it["evidence_to"] >= it["last_run"])
+    # An empty list from a store that has never recorded a refusal is a different claim from
+    # an empty list because the guard agreed with everything lately. Say which.
+    ever = conn.execute("SELECT COUNT(*) c FROM disposal_refusals").fetchone()["c"]
+    return {"items": items, "count": len(items), "days": days, "ever_recorded": ever,
+            "messages": sum(i["messages"] for i in items),
+            "rate": _refusal_rate(conn, cutoff, days)}
+
+
+def _refusal_rate(conn, cutoff, days):
+    """Is the pile still filling? Refusals PER RUN over the window - and it can fall.
+
+    Everything else on this panel describes the state: how many messages, how long each
+    disagreement has run. None of it says which direction things are moving - and the
+    direction is what a reader actually wants, because a pile that is filling faster and a
+    pile that is filling slower look identical in a count.
+
+    A RATE, NOT A TOTAL, and the reason is structural. `disposal_refusals` is append-only, so
+    a cumulative count rises forever - it would report "growing" on the morning after the
+    rules were fixed, which makes it a number that reads as evidence and can never be
+    evidence. Refusals per run goes to zero the moment the guard and the rules stop
+    disagreeing, while the total sits exactly where it is.
+
+    THE DENOMINATOR COMES FROM `runs`, NOT FROM THIS TABLE, and that is the entire subtlety.
+    A run that refuses nothing writes no refusal row. Counting the run dates present in
+    `disposal_refusals` divides by the number of mornings that went badly, which cannot
+    produce a rate below 1.0 however many clean mornings pass - blind in the reassuring
+    direction, exactly like every other unstated scope this lane has met. A quiet morning is
+    still a morning and has to be in the denominator.
+
+    AND IT HAS A THIRD STATE. Under two runs in the window there is no trend to draw, and a
+    two-state answer would pick the one that lets the page render: a confident "0.0 per run"
+    over a measurement that never happened. Returns None, and the panel then says nothing.
+    """
+    run_dates = [r["run_date"] for r in conn.execute(
+        "SELECT DISTINCT run_date FROM runs WHERE run_date >= ? ORDER BY run_date", (cutoff,))]
+    if len(run_dates) < 2:
+        return None
+    per_day = {r["run_date"]: r["c"] for r in conn.execute(
+        "SELECT run_date, COUNT(*) AS c FROM disposal_refusals "
+        "WHERE run_date >= ? GROUP BY run_date", (cutoff,))}
+    # Split the window in half by MORNINGS, not by calendar days - the runs are not evenly
+    # spaced (reboots, skipped catch-up dispatches), so halving the dates would hand the two
+    # sides different numbers of observations without saying so.
+    half = len(run_dates) // 2
+    prior_dates, recent_dates = run_dates[:half], run_dates[half:]
+
+    def block(dates):
+        n = sum(per_day.get(d, 0) for d in dates)
+        return {"runs": len(dates), "refusals": n,
+                "per_run": round(n / len(dates), 3) if dates else None}
+
+    total = sum(per_day.get(d, 0) for d in run_dates)
+    return {"days": days, "runs": len(run_dates), "refusals": total,
+            "per_run": round(total / len(run_dates), 3),
+            "recent": block(recent_dates), "prior": block(prior_dates),
+            "by_run": [{"run_date": d, "refusals": per_day.get(d, 0)} for d in run_dates]}
+
+
+def api_thin_evidence(conn, q):
+    """Bins that rest on almost no precedent - the OTHER half of the refusals panel.
+
+    The refusals panel shows where the guard overruled the sort, and it is reassuring by
+    construction: every row in it is mail that was NOT deleted. This asks the question with
+    the uncomfortable answer. Of the mail that WAS binned, which bins stood on the least
+    prior evidence - and therefore, if any of today's calls was wrong, which ones are it?
+
+    `apply_proposal` already computes this. It prints, under every clearance, how many of
+    them rest on `<=2 prior binned, none kept`, and the comment above that code says exactly
+    why it is printed rather than enforced: a minimum-evidence floor was measured against the
+    store and argued against, because thin slices self-select for noise (of 138, not one was
+    money, security, family or medical). The design conclusion was "do not threshold it,
+    SHOW it. If this line ever names something that is not noise, that is the evidence for a
+    floor - and it will be evidence rather than a hunch."
+
+    It was shown to a console that closes with the session. So the evidence that decides an
+    open design question was being generated every morning and read by nobody - the same
+    shape as the refusals table before it got this treatment, and the same shape as the
+    retention count before that. This is the third time in this lane that the honest number
+    existed and had nowhere to live.
+
+    WHAT `prior` COUNTS, because the CLI's word for it is wrong and copying the wrong number
+    would be worse than not showing one. The disposer builds its history AFTER the run has
+    been ingested (the ordering is deliberate - see ROUTINE step 3), so a slice's count there
+    includes the run's OWN row: a sender binned for the very first time prints as "1 prior".
+    That is fine for a threshold, which only needs an ordering, and misleading on a page,
+    where a person reads "prior" as "before today". So this counts strictly `run_date <` the
+    run being reported, and a first-ever bin reads 0. The two numbers therefore differ by
+    one, on purpose, and `counts` says which convention is in force.
+
+    `kept` is carried beside it because the pair is the real claim. The guard already refuses
+    any slice with kept mail on record, so a thin row is not "the guard was unsure" - it is
+    "the guard had almost nothing to reason FROM." Those are different, and only the second
+    is worth a person's eye.
+    """
+    date = (q.get("date") or [""])[0].strip()
+    if not date:
+        row = conn.execute("SELECT MAX(run_date) d FROM messages").fetchone()
+        date = (row["d"] if row else "") or ""
+    try:
+        floor = int((q.get("floor") or ["2"])[0])
+    except ValueError:
+        floor = 2
+
+    # Only mail that actually MOVED. A `would_trash` row is a proposal the guard refused or
+    # a read-only pass's verdict; neither is a deletion, and listing them here would put
+    # mail that is still in the inbox under a heading about mail that is not.
+    binned = conn.execute(
+        "SELECT sender, subject, category, account, reason, message_id "
+        "FROM messages WHERE run_date = ? AND disposition = 'trashed' "
+        "AND sender IS NOT NULL AND sender != ''", (date,)).fetchall()
+
+    # One pass over the prior history, bucketed the way the GUARD buckets it: by
+    # (sender key, category). Keying on the raw sender string instead would split a sender
+    # that reached the store under two spellings and hand back a thinner number than the
+    # truth - which, for a panel whose whole job is to find thin evidence, would manufacture
+    # its own findings.
+    hist = {}
+    for r in conn.execute(
+            "SELECT sender, disposition, COALESCE(category,'') category "
+            "FROM messages WHERE run_date < ? AND sender IS NOT NULL AND sender != ''",
+            (date,)):
+        key = _sender_key(r["sender"])
+        if not key:
+            continue
+        h = hist.setdefault((key, r["category"]), {"trashed": 0, "kept": 0})
+        if r["disposition"] in db.DISPOSABLE:
+            h["trashed"] += 1
+        elif r["disposition"] in db.DELIBERATELY_KEPT:
+            h["kept"] += 1
+
+    items = []
+    for m in binned:
+        key = _sender_key(m["sender"]) or ""
+        h = hist.get((key, m["category"] or ""), {"trashed": 0, "kept": 0})
+        if h["trashed"] > floor:
+            continue
+        items.append({
+            "sender": m["sender"], "subject": m["subject"],
+            "category": m["category"], "account": m["account"],
+            "reason": m["reason"], "message_id": m["message_id"],
+            "prior": h["trashed"], "kept": h["kept"],
+            # A first-ever bin is the sharpest case and deserves its own word rather than
+            # being read off a zero. This is the row where a standing rule did not decide
+            # anything - the triager did, alone, this morning.
+            "first_ever": h["trashed"] == 0,
+        })
+    items.sort(key=lambda i: (i["prior"], i["sender"] or ""))
+
+    return {"items": items, "count": len(items), "run_date": date,
+            "binned": len(binned), "floor": floor,
+            "counts": "prior bins strictly before this run (a first-ever bin reads 0)"}
+
+
+def api_retention_shelf(conn, q):
+    """Mail that is past its rule-15 shelf life - the whole-mailbox answer, on the page.
+
+    THE OTHER HALF OF THE REFUSALS PANEL. That panel shows where the disposal guard overruled
+    the triager. This shows the pile that disagreement leaves behind: summary-tier mail whose
+    shelf has expired, which a standing rule says to retire and which is still sitting in an
+    inbox. Seeing one without the other gives you the argument and not the cost.
+
+    It exists because the number had nowhere to live. `tools/retention_scan.py` walks all
+    eight mailboxes every morning - the only thing here that does, since the daily --days 2
+    fetch cannot by definition see mail old enough to retire - and printed its answer to a
+    console that closed with the session. An open owner question (Q41) is argued from this
+    count, and the count was drifting up unwatched.
+
+    `complete` is the field that matters most and it is why the reach is stored WITH the
+    answer rather than recomputed beside it. A scan that lost a box to a throttled account, or
+    stopped at its own time budget, returns FEWER overdue items - so an incomplete walk always
+    looks like better news than a full one, and it looks that way at the exact moment it
+    deserves least trust. A count served without its reach is this lane's oldest bug.
+
+    `ever_scanned` keeps the second distinction an empty list destroys: nobody has asked, versus
+    asked and found nothing. They render identically as [] and mean opposite things.
+    """
+    return db.retention_shelf(conn)
+
+
+def _days_between(a, b):
+    """Whole days between two ISO dates, or None if either is missing/unparseable."""
+    try:
+        return (date.fromisoformat(b) - date.fromisoformat(a)).days
+    except Exception:
+        return None
+
+
 def api_host_review(conn, q, body=None):
     """Rule on a (sender, host) pairing. POST only.
 
@@ -781,7 +1183,13 @@ _WHEN = re.compile(
 
 
 def _workflow_extract(raw, link_ok=None, domain=""):
-    """Pull the actionable link and the appointment time out of one workflow message."""
+    """Pull the actionable link and the appointment time out of one workflow message.
+
+    This is the SERVER path: `raw` is the full RFC822 message, headers included, so the
+    sender's signature is checkable and a link can earn the right to be clickable. The
+    store path (`_workflow_extract_stored`) shares every line of the parsing below and
+    differs only in what it can prove about the sender - which is nothing.
+    """
     import email as _email
     from email import policy as _policy
     msg = _email.message_from_bytes(raw, policy=_policy.default)
@@ -802,7 +1210,40 @@ def _workflow_extract(raw, link_ok=None, domain=""):
             html = body
         elif part.get_content_type() == "text/plain" and text is None:
             text = body
+    return _workflow_parse(html, text, subject, frm, dkim_domain_ok, link_ok)
 
+
+def _workflow_extract_stored(body_text, sender, subject, link_ok=None):
+    """The same extraction, from the copy of the body the STORE already holds.
+
+    Why this exists: the endpoint used to have exactly one source - a per-message IMAP
+    fetch in its own subprocess - so a mailbox that could not answer made the panel silent
+    about mail whose full text was already sitting in the local database. A throttled
+    mailbox can spend more on CONNECT and SELECT alone than the whole request is allowed,
+    and when that happens no share of the budget can succeed, however fairly it is divided:
+    the floor is above the ceiling. Fair-sharing a budget only helps once a share can buy
+    at least one operation. When it cannot, the answer is to stop needing the network.
+
+    THE STORE CANNOT VOUCH FOR A SENDER, and that is the whole reason this is a separate
+    function rather than a cheaper first argument. `messages` keeps the body and not the
+    headers, so there is no Authentication-Results to read and DKIM is not merely failing -
+    it is unaskable. `dkim_domain_ok` is therefore hard-wired False, which fails CLOSED:
+    the item is surfaced, and its link is rendered as text with the reason said out loud.
+    A stored body is enough to tell someone an action is waiting; it is never enough to
+    hand them a live link to click, and the two must not be allowed to share one outcome.
+    """
+    body = body_text or ""
+    looks_html = "<a " in body.lower() or "<html" in body.lower()
+    return _workflow_parse(body if looks_html else None, body,
+                           " ".join((subject or "").split()), sender or "",
+                           False, link_ok)
+
+
+def _workflow_parse(html, text, subject, frm, dkim_domain_ok, link_ok=None):
+    """Links, primary action and appointment time - the half that does not care where the
+    body came from. Kept in ONE place on purpose: a second spelling of this parsing is a
+    second thing to get wrong, and the two sources must not disagree about what a message
+    says merely because they disagree about who can prove it was sent."""
     links = []
     for url, label in _ANCHOR.findall(html or ""):
         label = " ".join(re.sub(r"<[^>]+>", " ", label).split())[:70]
@@ -833,6 +1274,16 @@ _LONG = re.compile(r"(\w+)\s+(\d{1,2}),?\s+(\d{4})")
 _MONTHS = {m.lower(): i for i, m in enumerate(
     ["January", "February", "March", "April", "May", "June", "July", "August",
      "September", "October", "November", "December"], 1)}
+
+
+def _days_since(run_date):
+    """Whole days from a YYYY-MM-DD run date to today, or None if it will not parse."""
+    from datetime import datetime, date
+    try:
+        d = datetime.strptime(str(run_date)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    return (date.today() - d).days
 
 
 def _workflow_when_state(when, horizon_days):
@@ -908,50 +1359,195 @@ def api_workflow_actions(conn, q):
     acked_msg = {r["key"] for r in conn.execute(
         "SELECT key FROM acks WHERE kind='message'")}
 
-    seen, items, errors = set(), [], []
-    tool = os.path.join(os.path.dirname(HERE), "tools", "mailtool.py")
+    # WHOLE-REQUEST BUDGET, from a measured failure. Each message is read from the server in its
+    # own subprocess with its own 45s timeout, and there are up to 25 of them - so the worst case
+    # was ~19 minutes and nothing bounded the request as a whole. When a slow account made this
+    # endpoint take minutes rather than seconds, the browser's fetch simply hung and the panel
+    # rendered NOTHING - not even the reach block that exists precisely to say "I could not read
+    # these." A per-item timeout is not a budget: ask what the worst case of the LOOP is, never of
+    # the step. The honesty machinery below is worthless if the response never arrives, which is
+    # the same last-layer failure the reach block was built for - a guarantee is only as strong as
+    # its last layer. The budget is wall-clock across the whole request; whatever it does not
+    # reach is reported as unread, never silently dropped.
+    try:
+        budget = max(5, min(600, int((q.get("budget") or ["25"])[0])))
+    except ValueError:
+        budget = 25
+    deadline = time.monotonic() + budget
+
+    # FAIR SHARE, from a measured failure. The budget above bounds the request, but it said
+    # nothing about how the request is SHARED - each read was handed `min(45, left)`, i.e.
+    # everything still on the clock. So the FIRST message could spend the lot: against a slow
+    # mailbox one read consumed essentially the entire budget and every candidate behind it was
+    # reported as "the budget ran out", leaving the endpoint to answer `outstanding: 0` having
+    # read none of them.
+    # That is this file's own lesson one layer in - bounding the whole does not bound a part's
+    # claim on the whole - and it is worse than the hang it replaced in one specific way: the
+    # response ARRIVES, so it looks like an answer. A candidate that cannot be read must cost
+    # one slot, not all of them. The floor keeps a merely-slow-but-workable mailbox readable
+    # instead of manufacturing timeouts that the two-sided control above exists to forbid.
+    # FAIR ACROSS ITEMS IS NOT FAIR ACROSS ACCOUNTS - the same lesson one layer further out.
+    # The share above divides the budget by the number of CANDIDATES, but what actually fails is
+    # an ACCOUNT, and an account holding N candidates therefore collects N shares. When every
+    # candidate lives in one throttled mailbox, "fair share" hands that mailbox 100% of the
+    # budget anyway: it spends the lot issuing doomed reads, reads nothing, and emits one error
+    # line per candidate - which reads as many problems when the truth is one.
+    # A throttled box can cost more per read than the whole budget, and more than the
+    # 45s per-item cap - so no share of any size could have succeeded.
+    # So: consecutive timeouts on the SAME account condemn that account for the rest of the
+    # request. Its remaining candidates are reported unread with the cause named once, and the
+    # budget they would have burned is left for accounts that can still answer.
+    # TWO, not one, and the existing control is why. A single slow message is NOT evidence that
+    # its mailbox is bad - test_workflow_budget leg 3 holds exactly that case (one 30s message
+    # in front of five instant ones) and condemning on the first timeout would have starved five
+    # readable messages to punish one. Two in a row is the weakest evidence that actually
+    # distinguishes "this message is slow" from "this mailbox is slow", and it still bounds the
+    # waste at two shares instead of one per candidate.
+    MIN_READ_S = 3.0
+    STALL_AFTER = 2
+    misses = {}           # account -> consecutive timeouts so far
+    stalled = {}          # account -> the share its reads were given before it was condemned
+    read_ok = 0
+    cands, seen = [], set()
     for r in rows_:
         addr = (email_utils.parseaddr(r["sender"])[1] or "").lower()
         kind = senders.get(addr)
         if not kind or r["message_id"] in seen:
             continue
         seen.add(r["message_id"])
-        if len(items) >= 25:
+        cands.append((r, kind))
+        if len(cands) >= 25:
             break
-        tmp = os.path.join(tempfile.gettempdir(),
-                           "va_%s.eml" % abs(hash(r["message_id"])))
-        try:
-            p = subprocess.run(
-                [sys.executable, tool, "find", "--account", r["account"],
-                 "--message-id", r["message_id"], "--out", tmp],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=45)
-            if p.returncode != 0 or not os.path.exists(tmp):
-                errors.append({"subject": r["subject"], "why": "not on the server"})
+
+    # One query for every candidate's stored body, newest run first. `body_text` is carried on
+    # ingest precisely so a message can be read without going back to the network - this
+    # endpoint simply never asked. Rows written before that field existed carry no body and
+    # fall through to the server path unchanged.
+    stored_bodies = {}
+    if cands:
+        ids = [r["message_id"] for r, _ in cands]
+        qmarks = ",".join("?" * len(ids))
+        for row_ in conn.execute(
+                "SELECT message_id, body_text FROM messages WHERE message_id IN (%s) "
+                "AND body_text IS NOT NULL AND body_text != '' "
+                "ORDER BY run_date ASC" % qmarks, ids):
+            stored_bodies[row_["message_id"]] = row_["body_text"]
+    read_from_store = 0
+
+    items, errors = [], []
+    tool = os.path.join(os.path.dirname(HERE), "tools", "mailtool.py")
+    for idx, (r, kind) in enumerate(cands):
+        # STORE FIRST. The body we already have is the same body the server would send
+        # back, and reading it costs no socket, no subprocess and no share of the budget -
+        # so a mailbox that cannot answer can no longer make this panel silent about mail
+        # whose text is sitting in the local database. What the store CANNOT supply is the
+        # sender's signature (it keeps bodies, not headers), so a stored item is surfaced
+        # with its link deliberately not clickable and the reason said out loud. Surfacing
+        # and vouching are two different claims; this buys the first and not the second.
+        info = None
+        source = "server"
+        stored = stored_bodies.get(r["message_id"])
+        if stored:
+            info = _workflow_extract_stored(stored, r["sender"], r["subject"], link_ok)
+            source = "store"
+            read_from_store += 1
+        if info is None:
+            if r["account"] in stalled:
+                # Named once, as ONE cause. Paying a share to re-learn that a stalled mailbox is
+                # still stalled buys nothing and spends budget belonging to the boxes that answer.
+                errors.append({"subject": r["subject"], "account": r["account"],
+                               "why": "not read - %s had already failed to answer within its %.0fs "
+                                      "share, so this was not attempted" % (r["account"],
+                                                                            stalled[r["account"]])})
                 continue
-            info = _workflow_extract(open(tmp, "rb").read(), link_ok, domain)
-        except Exception as e:
-            # NEVER swallow this silently. The first version had a bare `continue` here and
-            # a missing module-level import made EVERY message raise - so the panel showed
-            # a clean, confident "0 actions" while the real answer was that it had not
-            # managed to read a single one. A panel about time-critical mail must not be
-            # able to report an all-clear it did not earn.
-            errors.append({"subject": r["subject"], "why": "%s: %s" % (type(e).__name__, e)})
-            continue
-        finally:
+            left = deadline - time.monotonic()
+            if left < MIN_READ_S:
+                # A share below the cost of one read purchases NOTHING. The old code clamped the
+                # share with `left` and issued the read anyway - a 1s attempt that could not
+                # possibly finish, reported as "the mailbox did not answer within its 1s share".
+                # That sentence blames the mailbox for a budget this code never gave it, which is
+                # a refusal and a failure sharing one outcome. Say which one it was.
+                errors.append({"subject": r["subject"], "account": r["account"],
+                               "why": "not read - the %ds budget was exhausted after %d completed "
+                                      "read(s); this was not attempted" % (budget, read_ok)})
+                continue
+            # Recomputed every iteration, so time the fast reads gave back is redistributed to
+            # whatever is still queued rather than being lost with the item that saved it.
+            share = max(MIN_READ_S, left / max(1, len(cands) - idx))
+            tmp = os.path.join(tempfile.gettempdir(),
+                               "va_%s.eml" % abs(hash(r["message_id"])))
             try:
-                os.remove(tmp)
-            except OSError:
-                pass
+                p = subprocess.run(
+                    [sys.executable, tool, "find", "--account", r["account"],
+                     "--message-id", r["message_id"], "--out", tmp],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=min(45, max(MIN_READ_S, min(left, share))), creationflags=_NO_WINDOW)
+                # THE SUBPROCESS CAME BACK, so the mailbox answered - whatever its verdict. Clearing
+                # the streak here rather than on a successful extract is the difference between
+                # "this account is unreachable" and "this message is not there", which are two
+                # different truths that must not share one outcome. Resetting only on success let a
+                # perfectly responsive box be condemned by a run of not-on-the-server answers.
+                misses[r["account"]] = 0
+                if p.returncode != 0 or not os.path.exists(tmp):
+                    errors.append({"subject": r["subject"], "account": r["account"],
+                                   "why": "not on the server"})
+                    continue
+                info = _workflow_extract(open(tmp, "rb").read(), link_ok, domain)
+            except subprocess.TimeoutExpired:
+                # Name the MAILBOX, not just the message. When a box goes slow every one of its
+                # messages fails identically, and a reach block listing eleven subjects with no
+                # common cause reads as eleven problems instead of one unreachable account - which
+                # is the thing the reader has to know to judge what the panel's silence is worth.
+                given = min(45, max(MIN_READ_S, min(left, share)))
+                misses[r["account"]] = misses.get(r["account"], 0) + 1
+                if misses[r["account"]] >= STALL_AFTER:
+                    stalled[r["account"]] = given
+                errors.append({"subject": r["subject"], "account": r["account"],
+                               "why": "not read - %s did not answer within its %.0fs share of the "
+                                      "%ds budget" % (r["account"], given, budget)})
+                continue
+            except Exception as e:
+                # NEVER swallow this silently. The first version had a bare `continue` here and
+                # a missing module-level import made EVERY message raise - so the panel showed
+                # a clean, confident "0 actions" while the real answer was that it had not
+                # managed to read a single one. A panel about time-critical mail must not be
+                # able to report an all-clear it did not earn.
+                errors.append({"subject": r["subject"], "account": r["account"],
+                               "why": "%s: %s" % (type(e).__name__, e)})
+                continue
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        read_ok += 1
         ws = _workflow_when_state(info["when"], horizon)
         items.append({
             "kind": kind[0], "kind_label": kind[1],
             "run_date": r["run_date"], "account": r["account"],
             "sender": r["sender"], "subject": info["subject"],
             "message_id": r["message_id"],
-            "when": info["when"], "auth_ok": info["auth_ok"],
+            "when": info["when"], "auth_ok": info["auth_ok"], "source": source,
+            # WHY a link is not clickable, not merely THAT it is not. "sender could not be
+            # verified" is true of a failed signature and of a body read from the store, and
+            # those are different facts - one says the check ran and did not pass, the other
+            # says the check was never askable. A reader deciding whether to trust a
+            # health-care link deserves to be told which.
+            "auth_note": ("read from the local store, which keeps the body and not the "
+                          "headers - the sender signature cannot be checked offline"
+                          if source == "store" else None),
             "state": ws["state"], "days_until": ws["days_until"],
             "when_date": ws.get("when_date"),
+            # HOW LONG IT HAS BEEN SITTING HERE, for the items that have no date of their own.
+            # A dateless item is actionable immediately - that is right, and it is also why
+            # nothing ever ages one out. So a one-time token or a message notice stays on this
+            # panel indefinitely and renders IDENTICALLY to something that landed this morning.
+            # Observed in the field: an item months old sat in "needs you to do something"
+            # beside one due in days, with nothing on screen telling them apart. That is the
+            # exact erosion the horizon exists to prevent, arriving through the one door the
+            # horizon does not cover. This does not hide or expire anything - the owner decides
+            # that. It only refuses to let a long-stale item wear the same face as a fresh one.
+            "days_waiting": _days_since(r["run_date"]),
             "primary": info["primary"], "links": info["links"][:8],
             "acked": r["message_id"] in acked_msg,
             # Clickable ONLY with a verified sender AND a destination inside the domain.
@@ -960,14 +1556,85 @@ def api_workflow_actions(conn, q):
         })
     # Outstanding = not acknowledged, not past, and close enough to act on. `upcoming` is
     # deliberately NOT outstanding: it is real and it is kept, it just does not shout yet.
+    # CLICKABILITY IS BOUGHT BACK FOR THE FEW ITEMS THAT NEED IT.
+    #
+    # Reading from the store fixed reach and cost something real: a stored body cannot prove who
+    # sent it, so every store-sourced link is rendered as text. For a September appointment that
+    # is a fair trade. For the day-of Video Connect join link it is not - that link arrives ~30
+    # minutes before the visit and being able to press it is the entire point of this panel.
+    #
+    # So the budget changes jobs. It used to buy REACH for all 25 candidates and, against a slow
+    # mailbox, fail to buy any. Now the store supplies reach for free and the budget is spent only
+    # on the handful of items that are actionable AND whose link is in-domain - the only ones where
+    # a verified sender changes what the page can do. That is a much smaller set than the candidate
+    # list, so a mailbox slow enough to lose everything before can now still afford the one read
+    # that matters. Anything that fails here simply stays as it was: surfaced, honest, not clickable.
+    # ONE FAILURE PER ACCOUNT IS ENOUGH, the same lesson the main loop already learned. Two
+    # outstanding items on one throttled box would otherwise buy two full timeouts to discover
+    # the same fact twice, and the second one is spent after the box has already said no.
+    upgraded = 0
+    up_failed = set()
+    for it in items:
+        if it.get("source") != "store" or it["acked"]:
+            continue
+        if it["account"] in up_failed:
+            continue
+        if it["state"] not in ("now", "today", "soon"):
+            continue
+        p_ = it.get("primary")
+        if not p_ or not p_["host_in_domain"]:
+            continue                      # a verified sender still would not make it clickable
+        left = deadline - time.monotonic()
+        if left < MIN_READ_S:
+            break
+        tmp = os.path.join(tempfile.gettempdir(), "vaup_%s" % abs(hash(it["message_id"])))
+        try:
+            pr = subprocess.run(
+                [sys.executable, tool, "find", "--account", it["account"],
+                 "--message-id", it["message_id"], "--out", tmp],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=min(45, max(MIN_READ_S, left)), creationflags=_NO_WINDOW)
+            if pr.returncode == 0 and os.path.exists(tmp):
+                info2 = _workflow_extract(open(tmp, "rb").read(), link_ok, domain)
+                if info2["auth_ok"] and info2["primary"]:
+                    it.update({
+                        "source": "server", "auth_ok": True, "auth_note": None,
+                        "primary": info2["primary"], "links": info2["links"][:8],
+                        "safe_to_click": bool(info2["primary"]["host_in_domain"]),
+                    })
+                    upgraded += 1
+        except Exception:
+            # A failed upgrade is NOT a failure of the item - it already has its body, its date
+            # and its link from the store. Silence here would be wrong if it hid a missing item;
+            # it cannot, because the item is already in `items` either way.
+            up_failed.add(it["account"])
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    # The counters describe what the reader is LOOKING AT, not the order the code did things in.
+    # An upgraded item is a server read by the time it reaches the page, and leaving it counted as
+    # a stored one would make the provenance line under-report exactly the items whose links the
+    # upgrade just made live.
+    read_from_store -= upgraded
+
     outstanding = [i for i in items
                    if not i["acked"] and i["state"] in ("now", "today", "soon")]
     upcoming = [i for i in items if not i["acked"] and i["state"] == "upcoming"]
     # The client renders "not a <domain> host" and must not carry its own copy of what
     # that domain is - it is configuration, and a second spelling of it is a second thing
     # to get wrong the day someone changes it.
+    # `read` is the honest headline and it used to be derivable only by counting `errors`.
+    # "outstanding: 0" next to "read: 0 of 11" cannot be mistaken for a quiet morning; on its
+    # own it reads exactly like one. `stalled_accounts` names the mailboxes whose silence is
+    # the cause, so a reader is told the one real problem instead of eleven symptoms.
     return {"items": items, "lattice": "per-account", "days": days, "horizon": horizon, "errors": errors,
-            "candidates": len(seen), "domain": domain,
+            "candidates": len(seen), "domain": domain, "budget": budget,
+            "read": read_ok, "read_from_store": read_from_store, "upgraded": upgraded,
+            "read_from_server": read_ok - read_from_store,
+            "stalled_accounts": sorted(stalled),
             "outstanding": len(outstanding), "upcoming": len(upcoming)}
 
 
@@ -1410,6 +2077,26 @@ def protected_hit(prot, text):
     return any(n in t for n in prot["names"])
 
 
+def protected_names_hit(prot, text):
+    """Which protected entries matched - not merely whether one did.
+
+    Same test as `protected_hit`, reported instead of collapsed. The match is a plain
+    substring over the WHOLE sender string, which includes the address and the sending
+    provider's domain, so a short entry can match a sender that merely contains those
+    letters (a three-letter acronym inside an ordinary English word; an organisation name
+    that another company's ESP domain happens to begin with). That breadth is deliberate -
+    it fails toward keeping mail, which is the safe direction here, and narrowing it would
+    also break entries that are meant to match inside a domain with no separator.
+
+    What is NOT safe is a refusal that cannot say which entry fired. "This sender is
+    protected" reads as a verdict about the sender; "this sender matches protected entry
+    'x'" is a claim a reader can check, and an accidental match becomes visible the first
+    time it happens instead of surviving as a rule that silently never executes.
+    """
+    t = (text or "").lower()
+    return [n for n in prot["names"] if n in t]
+
+
 def sender_rule_verdict(conn, key, category=None):
     """Is this sender - or this slice of it - safe to lock to auto-trash?
 
@@ -1755,17 +2442,16 @@ def api_calendar(conn, q):
         "SELECT key FROM acks WHERE kind = 'thread'")}
     act, open_act = collections.Counter(), collections.Counter()
     for r in conn.execute(
-            "SELECT %s day, account, sender, subject, message_id FROM messages WHERE "
+            "SELECT %s day, account, sender, subject, message_id, concept, importance "
+            "FROM messages WHERE "
             "importance IN (%s)" % (col, ",".join("?" * len(ATTENTION))), ATTENTION):
         act[r["day"]] += 1
         # Acknowledged counts as handled at either scope - a thread ack covers this run's
         # instance of a recurring notice just as a message ack covers the single email.
-        done = (any(k in acked_msg for k in
-                    ack_identities("message", r["message_id"], r["sender"], r["subject"],
-                                   r["account"]))
-                or ack_key("thread", None, r["sender"], r["subject"],
-                           r["account"] if "account" in r.keys() else None)
-                in acked_thread)
+        # `concept` and `importance` are selected because ack_covers needs them for the
+        # family-escalation carve-out; without them a family emergency would count as
+        # handled here while the open-items panel showed it as open.
+        done = ack_covers(r, acked_msg, acked_thread)
         if not done:
             open_act[r["day"]] += 1
     for d in days:
@@ -2397,7 +3083,7 @@ def api_message(conn, q):
                 [sys.executable, tool, "find", "--account", account,
                  "--message-id", mid, "--out", tmp],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=60)
+                timeout=60, creationflags=_NO_WINDOW)
             # TWO OUTCOMES THAT MEAN OPPOSITE THINGS, and they used to share one message.
             #
             # "not found in this mailbox" was returned whether the tool searched and found
@@ -2697,17 +3383,49 @@ def api_open_items(conn, q):
     acked_msg = acked_message_keys(conn)
     acked_thread = {r["key"] for r in conn.execute(
         "SELECT key FROM acks WHERE kind = 'thread'")}
+    # NOTHING IS GOING TO REMIND YOU ABOUT THIS ONE AGAIN. `days_since_seen` is the gap
+    # between the newest run and the last run whose MAIL still carried this item, so it
+    # separates the two ways an item can be open: one the sender keeps re-raising (a dunning
+    # notice, a repeated alert - the mailbox itself will bring it back), and one that arrived
+    # once and will never arrive again, where this list is now the only thing standing
+    # between it and being forgotten.
+    #
+    # SAY EXACTLY THAT AND NOT MORE. `last_seen` advances only when the message reappears in
+    # a run's mail (db.carry_open_items), and the daily fetch window is two days - so an item
+    # nobody re-sends goes quiet after about three days BY CONSTRUCTION. This number is
+    # therefore evidence about the SENDER's behaviour, not about whether the daily report
+    # mentioned the item. The first draft of this comment claimed the latter; running it
+    # against a real store is what caught the difference, because far more rows came back
+    # "quiet" than that reading could survive. Nothing here records what a report said, so
+    # nothing here may claim to.
+    #
+    # Written because an item can stay open and unacknowledged for weeks while the report
+    # that used to mention it goes silent. This panel is the half of that failure the code
+    # can actually see.
+    #
+    # MEASURED AGAINST THE NEWEST RUN, NOT AGAINST TODAY. If the sweep itself stops for a
+    # week then nothing has been seen for a week, and dating this from the wall clock would
+    # light up every row at exactly the moment the signal means nothing about the rows.
+    newest_run = conn.execute("SELECT MAX(run_date) AS d FROM runs").fetchone()["d"]
     for r in rows:
         r["days_open"] = _days_between(r.get("first_seen"),
                                        r.get("resolved_at") or str(today))
         r["stale"] = bool(r["state"] == "open" and (r["days_open"] or 0) >= 14)
-        ids = ack_identities("message",
-                             r["key"] if r["kind"] == "message" else None,
-                             r.get("sender"), r.get("subject"), r.get("account"))
-        r["acknowledged"] = bool(
-            any(i in acked_msg for i in ids)
-            or ack_key("thread", None, r.get("sender"), r.get("subject"),
-                       r.get("account")) in acked_thread)
+        gap = _days_between(r.get("last_seen") or r.get("first_seen"), newest_run)
+        r["days_since_seen"] = gap
+        # A closed item is SUPPOSED to stop appearing in runs, so silence about one is the
+        # system working. Only an open item can go quiet.
+        r["quiet"] = bool(r["state"] == "open" and (gap or 0) >= QUIET_AFTER_DAYS)
+        # An open item stores its Message-ID in `key` only when kind == 'message'; the rest
+        # of the identity is the same, so it goes through the ONE ack_covers implementation
+        # with that field renamed rather than re-deriving the rule here (which is how the
+        # family-escalation carve-out would otherwise have been missed on this panel).
+        r["acknowledged"] = ack_covers(
+            {"message_id": r["key"] if r["kind"] == "message" else None,
+             "sender": r.get("sender"), "subject": r.get("subject"),
+             "account": r.get("account"), "concept": r.get("concept"),
+             "importance": r.get("importance")},
+            acked_msg, acked_thread)
     # ACKNOWLEDGED LEAVES THE LIST. The distinction between "seen" and "done" is real and
     # the store still keeps both - but an owner may reasonably use acknowledging to mean
     # "I have dealt with this", and a panel that argues with its reader about what their own
@@ -2743,6 +3461,10 @@ def api_open_items(conn, q):
         "oldest_days": max([r["days_open"] or 0 for r in rows if r["state"] == "open"],
                            default=0),
         "median_days": median,
+        # The count that says "this list is being skimmed past" rather than "this list is
+        # long". An item nobody has seen in a week is not being carried, it is being lost.
+        "quiet": sum(1 for r in rows if r["state"] == "open" and r["quiet"]),
+        "quiet_after_days": QUIET_AFTER_DAYS,
         "hidden_because_acknowledged": acked_hidden,
         "waiting_on_you_from": [{"who": k, "items": n} for k, n in who.most_common(8)],
         "resolutions": list(RESOLUTIONS),
@@ -2856,6 +3578,9 @@ API = {
     "/api/sender": api_sender,
     "/api/message": api_message,
     "/api/steam/sales": api_steam_sales,
+    "/api/refusals": api_refusals,
+    "/api/thin-evidence": api_thin_evidence,
+    "/api/retention-shelf": api_retention_shelf,
     "/api/steam/refresh": api_steam_refresh,
     "/api/new-hosts": api_new_hosts,
     "/api/questions": api_questions,

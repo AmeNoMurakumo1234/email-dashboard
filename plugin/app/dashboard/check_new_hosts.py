@@ -127,7 +127,44 @@ def main():
         saved, already = _save(conn, findings, args.run_date)
         print(f"\nrecorded to host_flags: {saved} new pairing(s), {already} already known "
               f"(a pairing with a verdict is never re-opened)")
+
+    # The standing backlog, which the line above cannot speak to: "already known" is a
+    # storage state, and a reader takes it for a review state. Printed whether or not this
+    # run saved anything, because a quiet day is exactly when the pile goes unnoticed.
+    b = open_backlog(conn, args.run_date)
+    if b["open"]:
+        older = (f", {b['older']} of them first flagged before this run (oldest "
+                 f"{b['oldest']})") if b["older"] else " - all first flagged by this run"
+        print(f"AWAITING A VERDICT: {b['open']} pairing(s){older}.")
+        print("  Rule on them rather than leaving them for the reader: "
+              "the dashboard's new-host panel, or dashboard/rule_host.py.")
+    else:
+        print("awaiting a verdict: none - every flagged pairing has been ruled on.")
     return 0
+
+
+def open_backlog(conn, run_date=None):
+    """How many pairings are STILL awaiting a verdict - in total, and from before today.
+
+    The scan's window is one day. "Is anything unreviewed" is not a one-day question, and the
+    line this sits beside cannot answer it: "already known" names a pairing's STORAGE state,
+    and a reader takes it for its REVIEW state. So a run could report a days-old pile of
+    unexamined pairings in words that read as reassurance about them. Measured in the field -
+    a backlog stood open across three consecutive runs, each of which printed that line and
+    moved on.
+
+    `older` counts pairings first flagged before `run_date`, which is the half a caller cannot
+    infer from the scan's own output at all.
+    """
+    import datetime
+    day = run_date or datetime.date.today().isoformat()
+    row = conn.execute(
+        "SELECT COUNT(*) AS open, "
+        "       SUM(CASE WHEN first_flagged < ? THEN 1 ELSE 0 END) AS older, "
+        "       MIN(first_flagged) AS oldest "
+        "FROM host_flags WHERE verdict IS NULL", (day,)).fetchone()
+    return {"open": row["open"] or 0, "older": row["older"] or 0, "oldest": row["oldest"]}
+
 
 
 def _save(conn, findings, run_date=None):

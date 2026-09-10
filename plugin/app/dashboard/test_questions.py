@@ -217,9 +217,6 @@ class GeneratorStaysQuiet(unittest.TestCase):
                                      "total is the understatement bug all over again")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class GuardAwareness(unittest.TestCase):
     """The escalation question must know when it has already been answered on disk."""
@@ -477,3 +474,11 @@ class UrgentSoundingIsNotNamed(unittest.TestCase):
         'it means what it reads as' are different claims."""
         self.assertNotIn("\x08", questions._ASSIGNED_TO.pattern)
         self.assertTrue(questions._ASSIGNED_TO.search("mention@noreply.example.com"))
+
+# THE RUNNER MUST BE THE LAST THING IN THE FILE. It used to sit in the middle, and
+# `unittest.main()` exits the process the moment it finishes - so every class defined
+# below it was never even DEFINED on a direct run. Measured across five
+# suites: a direct `python <file>` ran 16 tests here where `python -m unittest` ran 43.
+# A passing suite that quietly omits part of itself is a green covering work it did not do.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

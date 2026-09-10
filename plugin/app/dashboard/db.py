@@ -271,6 +271,77 @@ CREATE TABLE IF NOT EXISTS host_flags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_host_flags_open ON host_flags(verdict);
+
+-- WHY THE DISPOSER SAID NO, kept so that a refusal stops reading as a failure.
+--
+-- `would_trash` + still-in-INBOX has TWO causes and the store recorded neither: the guard
+-- REFUSED it (correct - it is meant to stay) or the disposal never happened (a defect).
+-- stranded_scan could only ever report the union, so it printed a list in which every entry
+-- looked like a defect - and in practice a mature install's list is dominated by correct
+-- refusals, because that is the intended resting state. A permanent false positive is not
+-- merely noise: it teaches the reader to skim the panel, which is how a real disposal
+-- failure ends up somewhere nobody looks any more. Same disease as the health-report ruling
+-- amnesia and the watchdog's all-clear blocker: one outcome where two truths exist.
+--
+-- One row per message_id, overwritten on each re-presentation, because the question is
+-- "why is this still here NOW" and an old reason for a message the guard has since cleared
+-- is worse than no reason. refused_at dates the verdict so a reader can see when the
+-- evidence was taken; evidence_from dates the OLDEST keep the refusal rests on, which is
+-- what exposes a refusal resting entirely on history a later owner ruling has overturned.
+--
+-- A stranded message with NO row here is "unexplained", never "proven defect": the table
+-- postdates the scanner, so early refusals have no row through no fault of their own. That
+-- failure direction is deliberate - calling one a defect would recreate the false positive
+-- in the mirror.
+CREATE TABLE IF NOT EXISTS disposal_refusals (
+    message_id    TEXT PRIMARY KEY,
+    run_date      TEXT,                        -- the run whose proposal was refused
+    account       TEXT,
+    sender        TEXT,
+    subject       TEXT,
+    category      TEXT,
+    reasons       TEXT,                        -- the guard's own wording, newline-separated
+    refused_at    TEXT,                        -- ISO ts of this verdict
+    evidence_from TEXT                         -- oldest run_date behind the keeps cited, if known
+);
+
+CREATE INDEX IF NOT EXISTS idx_refusals_run ON disposal_refusals(run_date);
+
+-- THE RULE-15 SHELF ANSWER, WHICH USED TO DIE WITH THE SESSION THAT PRODUCED IT.
+-- `tools/retention_scan.py` walks all eight mailboxes every morning to answer the one
+-- question the daily --days 2 window structurally cannot: what summary-tier mail is past
+-- its shelf life. It printed to a console and stopped there, so the page - the only surface
+-- anybody actually looks at - had never seen it, while an open owner question (Q41) was
+-- being argued from the number.
+--
+-- ONE ROW PER SCAN, and the answer is deliberately stored WITH ITS REACH. A shelf list is a
+-- claim about a whole mailbox, and this lane's oldest lesson is that a claim without its
+-- scope is a lie in the reassuring direction: a scan that lost a throttled box to a timeout
+-- reports a SMALLER number and reads as better news.
+CREATE TABLE IF NOT EXISTS retention_scans (
+    scanned_at     TEXT PRIMARY KEY,           -- ISO ts; the newest row is the truth
+    walked         INTEGER,                    -- messages actually looked at
+    matched        INTEGER,                    -- messages the search said were there
+    boxes_scanned  INTEGER,                    -- boxes that answered
+    boxes_total    INTEGER,                    -- boxes there are
+    truncated      TEXT,                       -- JSON: boxes cut short by the time budget
+    failed         TEXT,                       -- JSON: boxes that never answered, with why
+    shift_days     INTEGER DEFAULT 0           -- >0 marks a POSITIVE-CONTROL run, never served
+);
+
+CREATE TABLE IF NOT EXISTS retention_shelf (
+    scanned_at  TEXT,                          -- FK to retention_scans.scanned_at
+    account     TEXT,
+    sender      TEXT,
+    subject     TEXT,
+    msg_date    TEXT,
+    uid         TEXT,
+    label       TEXT,                          -- the rule-15 tier that matched
+    shelf_days  INTEGER,                       -- that tier's shelf
+    age_days    REAL                           -- age at scan time, real instant not midnight
+);
+
+CREATE INDEX IF NOT EXISTS idx_shelf_scan ON retention_shelf(scanned_at);
 """
 
 
@@ -789,9 +860,31 @@ def _already_acknowledged(conn, msg):
         return True
     account = (msg.get("account") or "").strip()
     subject = (msg.get("subject") or "").strip()
+    # THE CONTENT FALLBACK IS ONLY FOR ACKS THAT HAVE NO MESSAGE-ID OF THEIR OWN.
+    #
+    # `server.ack_key` stores a message ack under its Message-ID when there is one, and
+    # under a `row:` identity when there is not - and its docstring states why the fallback
+    # uses the EXACT subject: "so it stays one item and does not silence a whole series."
+    # Matching account+subject for EVERY message ack threw that away. It made a `message`
+    # ack behave like a `thread` ack, which is the one distinction the two scopes exist to
+    # draw.
+    #
+    # THE SHAPE THAT MAKES THIS WORST. Some notification series carry a constant,
+    # uninformative subject by design - a portal that mails "you have a new secure message"
+    # and deliberately keeps the content out of the mail sends the identical subject every
+    # time. For such a series the subject is the ONE thing every instance shares, so an
+    # account+subject match is effectively a match on the series. Acknowledging a single
+    # message then suppresses the standing item for every later arrival, permanently, from
+    # one click that was only ever about a different message. Any message ack carrying a
+    # Message-ID was capable of this, which on a mature store is most of them.
+    #
+    # An ack keyed on a Message-ID is a statement about THAT message; if this message has a
+    # different one, it is a different message. The `row:` acks keep the fallback, because
+    # for them the account and subject are the only handle that was ever recorded.
     if subject and conn.execute(
             "SELECT 1 FROM acks WHERE kind = 'message' AND COALESCE(account,'') = ? "
-            "AND COALESCE(subject,'') = ?", (account, subject)).fetchone():
+            "AND COALESCE(subject,'') = ? AND COALESCE(key,'') NOT LIKE '<%>'",
+            (account, subject)).fetchone():
         return True
     # A thread ack silences the whole recurring series, so it covers this instance too.
     shape = subject_shape(subject)
@@ -1168,6 +1261,123 @@ def ingest_run(run_date, accounts=None, messages=None, notes=None, steam_sales=N
     # append from a replace that silently deleted the previous nine batches.
     return run_id, replaced, {"opened": opened, "still_open_seen": still_open,
                               "suppressed": not open_items}
+
+
+def save_retention_scan(conn, scanned_at, walked, matched, boxes_scanned, boxes_total,
+                        truncated, failed, items, shift_days=0):
+    """Persist one rule-15 shelf scan, answer and reach together.
+
+    `shift_days > 0` marks a POSITIVE-CONTROL run (`retention_scan.py --shift-days N`), which
+    ages every message to prove the scan is capable of firing at all. Its inflated list is a
+    test result, not the state of the mailbox - so it is recorded (the control having run is
+    worth knowing) and never served. Serving it would be the exact inversion of the thing the
+    control exists to prevent: an instrument whose reassurance is unearned, here reading as
+    alarm nobody can act on.
+    """
+    conn.execute(
+        "INSERT OR REPLACE INTO retention_scans "
+        "(scanned_at, walked, matched, boxes_scanned, boxes_total, truncated, failed, "
+        " shift_days) VALUES (?,?,?,?,?,?,?,?)",
+        (scanned_at, walked, matched, boxes_scanned, boxes_total,
+         json.dumps(truncated or []), json.dumps(failed or []), int(shift_days or 0)))
+    conn.execute("DELETE FROM retention_shelf WHERE scanned_at = ?", (scanned_at,))
+    for it in items or []:
+        conn.execute(
+            "INSERT INTO retention_shelf "
+            "(scanned_at, account, sender, subject, msg_date, uid, label, shelf_days, "
+            " age_days) VALUES (?,?,?,?,?,?,?,?,?)",
+            (scanned_at, it.get("account"), it.get("sender"), it.get("subject"),
+             it.get("msg_date"), str(it.get("uid")) if it.get("uid") is not None else None,
+             it.get("label"), it.get("shelf_days"), it.get("age_days")))
+    conn.commit()
+
+
+def _refusal_sender_key(sender):
+    """ONE normaliser, used on BOTH sides of the shelf/refusal join.
+
+    Two tables record the same sender as free text, and matching raw strings across them is
+    how this lane has produced a confident wrong number six times now - a sender that differs
+    only by case or by surrounding whitespace silently fails to join, and the answer comes
+    back smaller and more reassuring than the truth. So neither side gets to spell it its own
+    way: both go through here.
+    """
+    return (sender or "").strip().lower() or None
+
+
+def retention_shelf(conn):
+    """The newest REAL shelf scan - its items, and what it actually reached.
+
+    `ever_scanned` is the distinction an empty list must never lose. "Nothing is past its
+    shelf" and "nobody has ever asked" are opposite claims that render identically as [], and
+    this lane has already shipped that mistake twice in the scan itself.
+
+    `complete` is the second one. A scan that lost a box to a throttled account, or was cut
+    short by its own time budget, reports a SMALLER number of overdue items - so a partial
+    walk always looks like better news than a full one. The flag travels ON the answer rather
+    than beside it, because the last layer is where an instrument's honesty is decided.
+    """
+    row = conn.execute(
+        "SELECT * FROM retention_scans WHERE shift_days = 0 "
+        "ORDER BY scanned_at DESC LIMIT 1").fetchone()
+    if row is None:
+        return {"ever_scanned": False, "scanned_at": None, "items": [], "count": 0,
+                "walked": None, "matched": None, "boxes_scanned": None, "boxes_total": None,
+                "truncated": [], "failed": [], "complete": False}
+
+    truncated = json.loads(row["truncated"] or "[]")
+    failed = json.loads(row["failed"] or "[]")
+    items = []
+    for r in conn.execute(
+            "SELECT * FROM retention_shelf WHERE scanned_at = ?", (row["scanned_at"],)):
+        it = dict(r)
+        shelf, age = it.get("shelf_days"), it.get("age_days")
+        # Derived, never stored: an overdue figure kept alongside the two numbers it comes
+        # from is one more thing that can drift out of agreement with them.
+        it["overdue_days"] = (round(age - shelf, 1)
+                              if age is not None and shelf is not None else None)
+        items.append(it)
+    items.sort(key=lambda i: (i["overdue_days"] is None, -(i["overdue_days"] or 0)))
+
+    # WHY THIS PILE IS STUCK, attached to the pile itself. A bare count reads as a backlog
+    # nobody has got round to. It can equally be a pile the disposal guard has ALREADY refused
+    # to release, which is the opposite claim about whose move it is - and the panel rendered
+    # the two identically. Retention rules and the guard can disagree permanently, so this
+    # distinction decides whether a reader is looking at work or at a deadlock.
+    #
+    # This reports what the guard DID (a row it wrote in disposal_refusals), never a
+    # re-derivation of what it would do. Predicting the verdict here would put a second,
+    # drifting copy of the guard's reasoning on the page - the duplicated-definition disease
+    # this lane already knows - and it would claim more than the evidence supports. A shelf
+    # item with no recorded refusal is left unmarked rather than guessed at: unmarked means
+    # "the guard has not been asked or did not record", never "the guard would allow it".
+    refusals = {}
+    for r in conn.execute(
+            "SELECT sender, run_date, reasons FROM disposal_refusals ORDER BY run_date"):
+        key = _refusal_sender_key(r["sender"])
+        if key and key not in refusals:
+            refusals[key] = {"since": r["run_date"], "reason": r["reasons"]}
+    for it in items:
+        hit = refusals.get(_refusal_sender_key(it.get("sender")))
+        it["blocked"] = bool(hit)
+        it["blocked_since"] = hit["since"] if hit else None
+        it["blocked_reason"] = hit["reason"] if hit else None
+
+    return {
+        "ever_scanned": True,
+        "scanned_at": row["scanned_at"],
+        "items": items,
+        "count": len(items),
+        "blocked_count": sum(1 for i in items if i["blocked"]),
+        "walked": row["walked"],
+        "matched": row["matched"],
+        "boxes_scanned": row["boxes_scanned"],
+        "boxes_total": row["boxes_total"],
+        "truncated": truncated,
+        "failed": failed,
+        "complete": (not truncated and not failed
+                     and row["walked"] == row["matched"]
+                     and row["boxes_scanned"] == row["boxes_total"]),
+    }
 
 
 if __name__ == "__main__":

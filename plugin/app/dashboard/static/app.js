@@ -195,6 +195,9 @@ async function init() {
   wireModalCloses();
   loadScoreboard().catch(() => {});
   loadNewHosts().catch(() => {});        // same: a quiet panel must never break a loud one
+  loadRefusals().catch(() => {});        // same
+  loadRetentionShelf().catch(() => {});  // same
+  loadThinEvidence().catch(() => {});    // same
   loadHeatmap().catch(() => {});   // decorative-adjacent: never block the run view on it
   setView(ui.view);   // restore the tab the user left on (trash | steam)
   $("#footer").textContent = `${runs.length} run(s) recorded · data refreshed each daily routine run`;
@@ -225,8 +228,16 @@ async function loadRun() {
   const t = data.totals || {};
   lastRun = data;                       // the tiles and their drill-downs share one source
   $("#kpis").innerHTML = "";
+  // THE TILES ARE AN ACCOUNTING OF THE RUN, SO THEY HAVE TO ADD UP. Fetched, Trashed, Kept
+  // and OTP left the guard's REFUSALS with nowhere to go, so on any day the disposer refused
+  // something the tiles came up short and nothing on the page said where those messages went.
+  // "Held by the guard" is the missing bucket - mail proposed for the bin that the disposer
+  // refused to move, still in the inbox on purpose. It appears only on the days it happened:
+  // a permanent zero would be one more thing to read past on the great majority of days,
+  // which refuse nothing.
   [["Fetched", t.fetched, "", "fetched"], ["Trashed", t.trashed, "trash", "trashed"],
    ["Kept / surfaced", t.kept, "kept", "kept"],
+   ...(t.held ? [["Held by the guard", t.held, "held", "held"]] : []),
    ["OTP deleted", t.otp, "otp", "otp"]].forEach(([l, n, c, key]) => {
     const k = el("div", "kpi clickable " + c);
     k.appendChild(el("div", "n", n == null ? "0" : n));
@@ -1172,14 +1183,26 @@ const KPI_DEFS = {
   fetched: {
     title: "Everything I looked at",
     blurb: "Every message triaged in this run, whatever became of it.",
-    pick: (d) => [...(d.surfaced || []), ...(d.trashed || [])],
+    pick: (d) => [...(d.surfaced || []), ...(d.trashed || []), ...(d.held || [])],
     groupBy: "account",
   },
   trashed: {
     title: "What I binned, and why",
     blurb: "Moved to the provider's Trash - never permanently deleted, and every one " +
            "journalled with its reason. Recoverable for about 30 days.",
+    // `d.trashed` used to mean "trashed OR would_trash", so this list carried the guard's
+    // refusals and over-claimed the deletions - it ran longer than the tile that opened it.
+    // Refused mail now lives in `held` and has its own tile.
     pick: (d) => d.trashed || [],
+    groupBy: "concept",
+  },
+  held: {
+    title: "What the guard would not let me bin",
+    blurb: "I proposed these for the bin and the disposer refused. They are still in your " +
+           "inbox, exactly where the refusal left them - nothing was deleted and nothing " +
+           "was forced through. A refusal means my proposal and the stored record " +
+           "disagreed, and the record won.",
+    pick: (d) => d.held || [],
     groupBy: "concept",
   },
   kept: {
@@ -1192,7 +1215,7 @@ const KPI_DEFS = {
     title: "One-time codes deleted",
     blurb: "Rule 1: a login code is dead the moment it is read, so these go on sight - " +
            "journalled like everything else.",
-    pick: (d) => [...(d.surfaced || []), ...(d.trashed || [])]
+    pick: (d) => [...(d.surfaced || []), ...(d.trashed || []), ...(d.held || [])]
       .filter((m) => /otp|verification|one.?time|passcode/i.test(
         `${m.category || ""} ${m.subject || ""}`)),
     groupBy: "account",
@@ -1410,13 +1433,20 @@ function showVersion(version, started, newestEdit, stale) {
 // both worlds: they ate the vertical space the mail needed AND were too short to use. A
 // four-row window onto an outstanding list is not a list. As a chip each costs nothing when
 // it is empty, and opens onto the whole screen when it is not.
-const ATTN_MODALS = ["setupModal", "wfModal", "openModal", "hostModal"];
+const ATTN_MODALS = ["setupModal", "wfModal", "openModal", "hostModal", "refModal",
+                     "shelfModal", "thinModal"];
 
-function chip(btnId, modalId, label, count) {
+function chip(btnId, modalId, label, count, opts) {
   const b = $("#" + btnId);
   if (!b) return;
-  b.hidden = !count;
-  b.textContent = count > 1 ? label + " (" + count + ")" : label;
+  // `opts.force` keeps a chip on screen at count 0. Only one caller needs it and the reason
+  // is worth stating: a count of zero from a check that could not READ most of what it was
+  // asked about is not the same as a count of zero, and hiding the chip turns the second
+  // into the first. `opts.suffix` is how it says which one this is.
+  const o = opts || {};
+  b.hidden = !count && !o.force;
+  b.textContent = (count > 1 ? label + " (" + count + ")" : label)
+                  + (o.suffix ? " " + o.suffix : "");
   b.onclick = () => { $("#" + modalId).hidden = false; };
 }
 
@@ -1711,7 +1741,19 @@ const WORKFLOW_ICON = { screening: "📋", video: "🎥", appointment: "🎥",
 // the same discipline as the ack keys. Re-deriving it here is how two spellings of one
 // rule drift apart.
 function wfLabel(it) {
-  if (!it.when) return { cls: it.state || "now", label: "" };
+  // A DATELESS ITEM STILL HAS AN AGE, and until now this panel refused to show it. An item
+  // with no date of its own is actionable immediately and nothing ever ages it out, so it
+  // sits here forever looking exactly as fresh as something that arrived this morning -
+  // measured on a "New secure message" that had been on this panel for 82 days next to an
+  // appointment 3 days out. The age comes from the SERVER (days_waiting) for the same reason
+  // days_until does: one implementation of the rule, not two spellings of it.
+  if (!it.when) {
+    const w = it.days_waiting;
+    return { cls: it.state || "now",
+             label: w == null || w < 1 ? ""
+                  : w === 1 ? "waiting since yesterday"
+                  : `waiting ${w} days` };
+  }
   const n = it.days_until;
   const suffix = n == null ? "" :
     n < 0 ? " - already passed" :
@@ -1822,10 +1864,14 @@ async function loadOpenItems() {
   // Said out loud. "1 open" quietly becoming "0 open" with no explanation is the same
   // silence this project keeps arguing against, just in the pleasant direction.
   const acked = data.hidden_because_acknowledged || 0;
+  // NOTHING WILL RAISE THESE AGAIN. An item the sender keeps re-sending comes back on its
+  // own; one that arrived once and went quiet has only this list left. Both read as "open",
+  // and only the second is at risk of simply being forgotten while the panel counts alone.
   $("#openCount").textContent =
     `(${data.open} open` +
     (data.oldest_days ? `, oldest ${data.oldest_days}d` : "") +
     (data.median_days ? `, median ${data.median_days}d` : "") +
+    (data.quiet ? ` · ${data.quiet} with no new mail in ${data.quiet_after_days}d+` : "") +
     (acked ? ` · ${acked} acknowledged, not counted` : "") +
     (data.resolved_off_channel
       ? ` · ${data.resolved_off_channel} closed elsewhere`
@@ -1867,6 +1913,15 @@ function openRow(it) {
     (it.account ? `<span class="open-acct">${esc(it.account)}</span>` : "") +
     `<span class="open-age">${esc(age)}</span>` +
     (it.runs_seen > 1 ? `<span class="muted">seen in ${it.runs_seen} runs</span>` : "") +
+    // Says what it MEASURES, not what one wishes it measured. `last_seen` moves only when
+    // the message itself reappears in a run's mail, so this is a fact about the sender:
+    // nothing is coming to remind you. It is NOT a record of what a run report said.
+    (it.quiet
+      ? `<span class="badge nomail" title="No mail has raised this again since the ` +
+        `${esc(it.last_seen || it.first_seen)} run. Nothing is going to remind you about ` +
+        `it - this list is the only thing still carrying it.">` +
+        `no new mail in ${it.days_since_seen}d</span>`
+      : "") +
     (it.importance ? `<span class="badge">${esc(it.importance)}</span>` : "") +
     // Said out loud, because both can be true and the combination looks like a fault:
     // acknowledging is "I have seen this" and it deliberately does not close an item.
@@ -1950,6 +2005,38 @@ async function resolveItem(key, payload) {
   }
 }
 
+// The reach of the last workflow check, in the panel's own words. Amber and above the list,
+// because it changes how everything under it should be read: a "nothing right now" that sits
+// below this line covers only the messages the check managed to open.
+function wfReachBlock(errs, candidates, stalledAccounts) {
+  const box = el("div", "wf-reach");
+  const why = {};
+  errs.forEach((e) => {
+    const raw = e.why || "unknown";
+    const k = /not attempted/i.test(raw) ? "not attempted - the budget was already spent"
+            : /timeout|did not answer/i.test(raw) ? "the mailbox did not answer in time"
+            : /not on the server/i.test(raw) ? "no longer in the mailbox"
+            : raw;
+    why[k] = (why[k] || 0) + 1;
+  });
+  const parts = Object.entries(why).map(([k, n]) => `${n} because ${k}`).join(", ");
+  // ONE CAUSE, NAMED ONCE. When a mailbox stalls, every one of its candidates fails the same
+  // way, and a list of eleven subjects reads as eleven problems. The reader's actual question
+  // is "what is wrong", and the answer is the account - so it goes first, in its own sentence.
+  const stalled = (stalledAccounts || []);
+  const lead = stalled.length
+    ? `<b>${esc(stalled.join(", "))} did not answer, so this check could not read its mail.</b> `
+    : `<b>This check did not reach every message.</b> `;
+  box.innerHTML =
+    lead + `${errs.length} of ${candidates} ` +
+    `workflow messages could not be read (${esc(parts)}). Anything below covers only the ` +
+    `${candidates - errs.length} it did open - a quiet panel is not an all-clear for these:` +
+    `<ul class="wf-reach-list">` +
+    errs.map((e) => `<li>${esc(e.subject || "(no subject)")}</li>`).join("") +
+    `</ul>`;
+  return box;
+}
+
 async function loadWorkflowActions() {
   let data;
   try {
@@ -1969,17 +2056,45 @@ async function loadWorkflowActions() {
   // The chip carries the count; the panel itself lives in a modal and is always "shown"
   // once opened. `live` rather than `shown` because a dated visit weeks out is carried on
   // a quiet line, and a chip that shouts about it every day is one nobody reads.
-  chip("wfBtn", "wfModal", "Needs you to do something", live.length);
+  // WHAT THE CHECK COULD NOT READ. The endpoint has always collected these - it refuses to
+  // swallow a failure, because "a panel about time-critical mail must not be able to report
+  // an all-clear it did not earn" - and the page threw them away, which put the all-clear
+  // back one layer up. Seen in the field: when the mailbox is slow, nearly every candidate
+  // times out, the endpoint honestly reports zero OUTSTANDING, and the panel renders nothing
+  // and hides its own chip - indistinguishable on screen from a quiet morning.
+  const errs = data.errors || [];
+  const candidates = data.candidates != null ? data.candidates : (all.length + errs.length);
+  chip("wfBtn", "wfModal", "Needs you to do something", live.length,
+       errs.length ? { force: true, suffix: `- ${errs.length} unread` } : null);
   panel.hidden = false;
-  if (!shown.length && !upcoming.length) return;
+
+  const wrap = $("#wfList");
+  wrap.innerHTML = "";
+  if (errs.length) wrap.appendChild(wfReachBlock(errs, candidates, data.stalled_accounts));
+  // WHERE THE ANSWERS CAME FROM. Reading a stored body is what keeps this panel speaking
+  // when a mailbox will not answer, but it buys a weaker claim - the body is the body, and
+  // nothing about the sender is provable offline. Saying so beside the count is the
+  // difference between a panel that is quietly degraded and one that admits it.
+  if (data.read_from_store) {
+    const src = el("div", "wf-source");
+    src.innerHTML =
+      `${data.read_from_store} of ${data.read} read from the local store` +
+      (data.read_from_server ? `, ${data.read_from_server} from the mailbox` : "") +
+      `. Stored copies carry the message text but not its headers, so their links are ` +
+      `shown as text rather than made clickable.`;
+    wrap.appendChild(src);
+  }
+  if (!shown.length && !upcoming.length) {
+    $("#wfCount").textContent = errs.length
+      ? `(nothing readable - ${errs.length} of ${candidates} could not be read)`
+      : "(nothing right now)";
+    return;
+  }
 
   $("#wfCount").textContent = wfShowDone
     ? `(${all.length} total, ${live.length} outstanding)`
     : (live.length ? `(${live.length})` : "(nothing right now)");
   $("#wfShowDone").textContent = wfShowDone ? "hide handled" : "show handled";
-
-  const wrap = $("#wfList");
-  wrap.innerHTML = "";
   shown.forEach((it) => {
     const w = wfLabel(it);
     const row = el("div", `wf-row ${w.cls}` + (it.acked ? " done" : ""));
@@ -1994,14 +2109,19 @@ async function loadWorkflowActions() {
         `<div class="wf-url">${esc(p.url)}</div>`
       : (p ? `<div class="wf-blocked">Link NOT made clickable - ` +
              `${it.auth_ok ? `destination is not a ${esc(domain)} host`
-                           : "sender could not be verified"}` +
+                           : esc(it.auth_note || "sender could not be verified")}` +
              `<div class="wf-url">${esc(p.url)}</div></div>`
            : '<div class="wf-blocked">No action link in this message.</div>');
     row.innerHTML =
       `<div class="wf-top"><span class="wf-ico">${WORKFLOW_ICON[it.kind] || "⚕"}</span>` +
       `<span class="wf-kind">${esc(it.kind_label)}</span>` +
       (w.label ? `<span class="wf-when ${w.cls}">${esc(w.label)}</span>` : "") +
+      // A signature that FAILED and a signature that could not be asked for are different
+      // facts, and flattening them into one red chip overstates the first and hides the
+      // second. A stored read is not a suspicious message; it is an unverifiable one.
       (it.auth_ok ? '<span class="wf-auth">sender verified</span>'
+                  : it.source === "store"
+                  ? '<span class="wf-auth bad">sender not verifiable (from store)</span>'
                   : '<span class="wf-auth bad">sender NOT verified</span>') +
       (it.acked ? '<span class="wf-auth done">handled</span>' : "") + "</div>" +
       `<div class="wf-subj">${esc(it.subject)}</div>` + action;
@@ -2103,6 +2223,304 @@ async function loadNewHosts() {
     }
     wrap.appendChild(row);
   });
+}
+
+// ---------- Where the guard overruled the sort ----------
+// Read-only on purpose. There is no "apply anyway" button and there never should be: the
+// whole value of splitting proposing from disposing is that the disposer cannot be talked
+// round, and a one-click override on this panel would hand that back through the UI.
+
+async function loadRefusals() {
+  let data;
+  try {
+    data = await get("/api/refusals?days=30");
+  } catch (e) { return; }
+  const items = data.items || [];
+  chip("refBtn", "refModal", "Kept by the guard", items.length);
+  const panel = $("#refPanel");
+  panel.hidden = false;
+  if (!items.length) return;
+
+  // An empty list from a store that has never recorded one is a different claim from an
+  // empty list because the guard agreed with everything. Never print a bare zero.
+  // "sender/category", not "sender/reason". Grouping on the reason TEXT split a standing
+  // refusal every time the guard's keep count ticked up, so this line used to overstate the
+  // number of distinct disagreements while understating how long each had been running.
+  $("#refCount").textContent =
+    `(${data.messages} message(s) across ${items.length} sender/category pairing(s), ` +
+    `last ${data.days} days; ${data.ever_recorded} recorded ever)`;
+
+  // IS THE PILE STILL FILLING? Everything else here describes the state and none of it says
+  // which way it is moving. A pile that is filling faster and one that is filling slower
+  // look identical in a count, and the direction is the half a reader wants.
+  //
+  // A rate, never a total: `disposal_refusals` is append-only, so a cumulative count would
+  // report "growing" on the morning after the rules were fixed. Refusals per run falls to
+  // zero the moment the guard and the rules stop disagreeing. `null` means there were fewer
+  // than two runs in the window - not a rate of zero - and then this says nothing at all
+  // rather than issuing a clean bill of health over a measurement that never happened.
+  const rate = data.rate;
+  const trend = $("#refTrend");
+  if (trend) {
+    if (!rate) {
+      trend.hidden = true;
+    } else {
+      trend.hidden = false;
+      const dir = rate.recent.per_run > rate.prior.per_run ? "up from"
+                : rate.recent.per_run < rate.prior.per_run ? "down from" : "level with";
+      // Both halves carry their own run count on purpose. The runs are not evenly spaced -
+      // a reboot or a skipped catch-up dispatch drops a morning - so two bare refusal
+      // counts would invite a comparison of unequal numbers of observations.
+      trend.textContent =
+        `${rate.refusals} refusal(s) over ${rate.runs} run(s) = ` +
+        `${rate.per_run} per run. Latest ${rate.recent.runs} run(s): ` +
+        `${rate.recent.per_run} per run, ${dir} ${rate.prior.per_run} ` +
+        `over the ${rate.prior.runs} before. ` +
+        `Refusals are never deleted, so the total above can only rise - this rate is the ` +
+        `part that can fall, and it goes to zero when the rules and the guard stop disagreeing.`;
+    }
+  }
+
+  const wrap = $("#refList");
+  wrap.innerHTML = "";
+  items.forEach((it) => {
+    // "Running for N days" is the tell that a rule has stopped executing rather than that a
+    // judgement call went one way this morning.
+    const persistent = (it.days_running || 0) >= 2;
+    // A refusal whose NEWEST evidence lands on the same run that proposed the bin is not a
+    // judgement that might go the other way tomorrow - the sweep keeps today's issue minutes
+    // before proposing last week's, so the keep count can never fall and the rule can never
+    // fire. Different claim from "refused across N days", and the more useful one.
+    const selfFeeding = !!it.self_feeding;
+    const row = el("div", "wf-row" + (persistent || selfFeeding ? " weighty" : ""));
+    row.innerHTML =
+      `<div class="wf-top"><span class="wf-ico">🛑</span>` +
+      `<span class="wf-kind">${esc(it.sender || "(unknown sender)")}</span>` +
+      `<span class="wf-auth">${it.messages} message(s)</span>` +
+      // Mornings, not messages. A day that happened to carry two digests is still one
+      // morning of disagreement, and "refused on N separate mornings" is what "a rule and a
+      // guard disagree permanently" actually looks like.
+      (it.runs && it.runs !== it.messages
+        ? `<span class="wf-auth">${it.runs} run(s)</span>`
+        : "") +
+      (it.category ? `<span class="wf-auth">${esc(it.category)}</span>` : "") +
+      (persistent
+        ? `<span class="wf-auth bad">refused across ${it.days_running} days &mdash; ` +
+          `a rule may not be executing</span>`
+        : "") +
+      (selfFeeding
+        ? `<span class="wf-auth bad">this run's own keep is the evidence &mdash; ` +
+          `the rule cannot fire</span>`
+        : "") +
+      "</div>" +
+      `<div class="wf-subj">${it.reasons.map((r) => esc(r)).join("<br>")}` +
+      // Say what was collapsed. The guard's wording carries a keep count that grows, so
+      // several variants behind one row means the evidence has been RISING across this
+      // stretch - which is the opposite of a disagreement that might resolve by waiting.
+      // Absorbing that silently would be the same disease the regrouping just fixed.
+      (it.reason_variants > 1
+        ? `<div class="wf-note">the guard's wording changed ${it.reason_variants} times ` +
+          `over this stretch (its keep count keeps growing); the newest is shown</div>`
+        : "") +
+      // The guard's count is scoped to the label it was asked about, and its own wording
+      // does not say so. Where the same sender has keeps filed under OTHER labels, the
+      // number the guard acted on is smaller than this sender's actual history - so show
+      // the gap rather than letting the reader take the count for the whole story. Only
+      // rendered when there IS a gap; a sender whose history sits under one label reads
+      // exactly as before.
+      (it.keeps_other_labels
+        ? `<div class="wf-note">the guard counted ${it.keeps_in_category} keep(s) under ` +
+          `<b>${esc(it.category || "(no label)")}</b>, but this sender also has ` +
+          `${it.keeps_other_labels} under ` +
+          `${it.other_labels.map((c) => esc(c)).join(", ")} &mdash; the evidence is ` +
+          `scoped to the label, not to the sender</div>`
+        : "") +
+      "</div>" +
+      `<div class="wf-url">${esc(it.first_run || "?")} &rarr; ${esc(it.last_run || "?")}` +
+      (it.evidence_from
+        ? ` &middot; evidence ${esc(it.evidence_from)}` +
+          (it.evidence_to && it.evidence_to !== it.evidence_from
+            ? ` &rarr; ${esc(it.evidence_to)}`
+            : "")
+        : " &middot; evidence date not recorded") +
+      "</div>";
+    wrap.appendChild(row);
+  });
+}
+
+// THE OTHER HALF OF THE PANEL ABOVE. Refusals show where the guard overruled the sort;
+// this shows the pile that disagreement leaves in the mailbox. Kept deliberately close to
+// loadRefusals so the two stay recognisable as one story.
+// The bins that stood on the least precedent. Read-only, like the refusals panel and for a
+// different reason: there is nothing to undo HERE because the undo lives in the mailbox -
+// every row is in Trash and recoverable for about 30 days. What this panel owes the reader
+// is an honest ranking, not a button.
+async function loadThinEvidence() {
+  let data;
+  try {
+    data = await get("/api/thin-evidence");
+  } catch (e) { return; }
+  const items = data.items || [];
+  chip("thinBtn", "thinModal", "Thin evidence", items.length);
+  const panel = $("#thinPanel");
+  panel.hidden = false;
+  if (!items.length) return;
+
+  // Always beside the count: a bare "4" invites the reading "4 bins were shaky", when the
+  // claim is "4 of 11 rested on little precedent". The denominator is the whole point, and
+  // this lane has been bitten repeatedly by a number served without its scope.
+  $("#thinCount").textContent =
+    `(${items.length} of ${data.binned} binned on ${data.run_date})`;
+  $("#thinNote").textContent = data.counts || "";
+
+  const wrap = $("#thinList");
+  wrap.innerHTML = "";
+  items.forEach((it) => {
+    // A first-ever bin is the only row where no standing rule decided anything - the sort
+    // made the call alone, this morning, with nothing behind it. That deserves the weight.
+    const row = el("div", "wf-row" + (it.first_ever ? " weighty" : ""));
+    row.innerHTML =
+      `<div class="wf-top"><span class="wf-ico">🪶</span>` +
+      `<span class="wf-kind">${esc(it.sender || "(unknown sender)")}</span>` +
+      (it.category ? `<span class="wf-auth">${esc(it.category)}</span>` : "") +
+      (it.first_ever
+        ? `<span class="wf-auth bad">first bin ever for this sender &mdash; ` +
+          `no standing rule decided this</span>`
+        : `<span class="wf-auth">${it.prior} earlier bin(s)</span>`) +
+      "</div>" +
+      `<div class="wf-subj">${esc(it.subject || "(no subject)")}</div>` +
+      (it.reason ? `<div class="wf-note">${esc(it.reason)}</div>` : "");
+    wrap.appendChild(row);
+  });
+}
+
+async function loadRetentionShelf() {
+  let data;
+  try {
+    data = await get("/api/retention-shelf");
+  } catch (e) { return; }
+  const items = data.items || [];
+
+  // THE CHIP MUST SURVIVE A ZERO WHEN THE ZERO IS UNEARNED. A scan that lost a box to a
+  // throttled account, or stopped at its own time budget, walks less of the mailbox and
+  // therefore finds FEWER overdue items - so the reassuring answer and the broken one look
+  // identical, and hiding the chip at zero would show the broken one as a clean bill of
+  // health. Same reasoning as the workflow chip's force flag, and the same fix.
+  const unearned = !data.ever_scanned || !data.complete;
+  chip("shelfBtn", "shelfModal", "Past shelf", items.length, {
+    force: unearned,
+    suffix: !data.ever_scanned ? "(never scanned)" : (!data.complete ? "(partial scan)" : ""),
+  });
+  const panel = $("#shelfPanel");
+  if (!panel) return;
+  panel.hidden = false;
+
+  // The reach, always, whether or not there is anything in the list. A count without its
+  // scope is the oldest bug in this lane, and the empty case is where it does its damage.
+  const reach = $("#shelfReach");
+  if (!data.ever_scanned) {
+    reach.innerHTML =
+      "<b>No scan on record.</b> Nothing here means nobody has asked yet &mdash; it does " +
+      "NOT mean the mailboxes are clear. Run <code>python tools/retention_scan.py --save</code>.";
+  } else {
+    const parts = [
+      `walked <b>${data.walked}</b> of <b>${data.matched}</b> messages across ` +
+      `<b>${data.boxes_scanned}</b> of <b>${data.boxes_total}</b> boxes`,
+      `scanned ${esc((data.scanned_at || "").replace("T", " ").slice(0, 16))}`,
+    ];
+    (data.failed || []).forEach((f) => {
+      parts.push(`<span class="bad">${esc(f.account)} never answered ` +
+                 `(${esc(f.why || "no reason recorded")}) &mdash; not covered</span>`);
+    });
+    (data.truncated || []).forEach((t) => {
+      parts.push(`<span class="bad">${esc(t.account)} cut short at ${t.walked} of ` +
+                 `${t.matched} &mdash; ${t.matched - t.walked} not looked at</span>`);
+    });
+    if (!data.complete) {
+      parts.push("<b class=\"bad\">This answer is PARTIAL, so the count below is a floor, " +
+                 "not a total.</b>");
+    }
+    reach.innerHTML = parts.join(" &middot; ");
+  }
+
+  $("#shelfCount").textContent = data.ever_scanned
+    ? `(${items.length} item(s)${data.complete ? "" : ", partial scan"})`
+    : "(never scanned)";
+
+  // WHOSE MOVE IS IT. Without this the pile reads as a backlog nobody got to; it can just as
+  // easily be one the guard has already refused to release, and the two rendered identically.
+  // Stated as a count of what the guard DID, so an unmarked item stays honestly unmarked
+  // rather than reading as "allowed".
+  const blockedNote = $("#shelfBlocked");
+  if (blockedNote) {
+    const nb = data.blocked_count || 0;
+    if (!items.length || !data.ever_scanned) {
+      blockedNote.innerHTML = "";
+    } else if (nb === items.length) {
+      blockedNote.innerHTML =
+        `<b class="bad">All ${nb} of these are from senders the disposal guard has already ` +
+        `refused on the record.</b> This is not a backlog waiting on the triager &mdash; ` +
+        `retiring them is blocked, and it stays blocked until the rule or the guard changes.`;
+    } else if (nb) {
+      blockedNote.innerHTML =
+        `<b>${nb} of ${items.length}</b> are from senders the disposal guard has already ` +
+        `refused on the record &mdash; those are blocked rather than pending. The other ` +
+        `${items.length - nb} carry no recorded refusal, which means the guard has not been ` +
+        `asked about them, <em>not</em> that it would let them go.`;
+    } else {
+      blockedNote.innerHTML =
+        `No recorded refusal stands behind any of these &mdash; the guard has not been asked ` +
+        `about them, which is not the same as it allowing them.`;
+    }
+  }
+
+  const wrap = $("#shelfList");
+  wrap.innerHTML = "";
+  if (!items.length) return;
+
+  // Grouped by the RULE that set the shelf, not by sender. The question a person asks here
+  // is "which of my retention rules is not executing", and one rule usually spans several
+  // senders - a per-message list buries that under repetition.
+  const byRule = new Map();
+  items.forEach((it) => {
+    const k = it.label || "(unruled)";
+    if (!byRule.has(k)) byRule.set(k, []);
+    byRule.get(k).push(it);
+  });
+  [...byRule.entries()]
+    .sort((a, b) => (b[1][0].overdue_days || 0) - (a[1][0].overdue_days || 0))
+    .forEach(([label, group]) => {
+      const worst = Math.max(...group.map((g) => g.overdue_days || 0));
+      const nBlocked = group.filter((g) => g.blocked).length;
+      const since = group.map((g) => g.blocked_since).filter(Boolean).sort()[0];
+      const row = el("div", "wf-row" + (worst >= 14 ? " weighty" : ""));
+      row.innerHTML =
+        `<div class="wf-top"><span class="wf-ico">🗄️</span>` +
+        `<span class="wf-kind">${esc(label)}</span>` +
+        `<span class="wf-auth">${group.length} item(s)</span>` +
+        `<span class="wf-auth">shelf ${group[0].shelf_days}d</span>` +
+        `<span class="wf-auth${worst >= 14 ? " bad" : ""}">worst ` +
+        `${worst.toFixed(1)}d overdue</span>` +
+        (nBlocked
+          ? `<span class="wf-auth bad">${nBlocked === group.length ? "blocked" :
+              nBlocked + " of " + group.length + " blocked"}` +
+            `${since ? " since " + esc(since) : ""}</span>`
+          : "") +
+        `</div>` +
+        (nBlocked
+          ? `<div class="wf-note">guard refused this sender: ` +
+            `${esc((group.find((g) => g.blocked).blocked_reason || "").slice(0, 150))}</div>`
+          : "") +
+        group.slice(0, 8).map((g) =>
+          `<div class="wf-subj">${esc((g.subject || "(no subject)").slice(0, 92))}` +
+          `<div class="wf-note">${esc(g.account)} &middot; ` +
+          `${(g.overdue_days || 0).toFixed(1)}d past a ${g.shelf_days}d shelf</div></div>`
+        ).join("") +
+        (group.length > 8
+          ? `<div class="wf-note">&hellip; and ${group.length - 8} more under this rule</div>`
+          : "");
+      wrap.appendChild(row);
+    });
 }
 
 // ---------- Acknowledgement: "I have seen this" ----------
@@ -2645,19 +3063,60 @@ function fmtSaleSpan(sale) {
   return sale.sale_ends ? `${start} → ${fmtDay(sale.sale_ends)}` : `On sale ${start} → now`;
 }
 
+// ONE spelling of "today" for every date judgement in this panel. steamExpired and
+// steamDaysLeft used to be free to disagree about which day it is; they no longer can,
+// because a game badged "1 day left" that the expiry test already considers gone is the
+// exact drift this project keeps paying for.
+function steamToday() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 // A sale is expired once its scraped end date is strictly before today (kept
 // visible through the end date itself, since Steam sales run into that day).
 // This drops a game off the board on its exact expiry day in real time —
 // without waiting for the next price poll to notice the discount is gone.
 function steamExpired(s) {
   if (!s.sale_ends) return false;
-  return s.sale_ends < new Date().toISOString().slice(0, 10);
+  return s.sale_ends < steamToday();
+}
+
+// Whole days from today until the sale's last day. 0 = ends today, 1 = ends tomorrow.
+// null when the end date is unknown (age-gated store page, or no countdown scraped) —
+// an unknown deadline is NOT urgent and must never be sorted or badged as if it were.
+function steamDaysLeft(s) {
+  if (!s.sale_ends) return null;
+  const day = 86400000;
+  const end = Date.parse(s.sale_ends + "T00:00:00Z");
+  const now = Date.parse(steamToday() + "T00:00:00Z");
+  if (isNaN(end) || isNaN(now)) return null;
+  return Math.round((end - now) / day);
+}
+
+// The deadline is the thing you lose by waiting, so it ranks ahead of the size of the
+// discount. Sales with a KNOWN end come first, soonest first; unknown ends sink to the
+// bottom rather than being guessed at; discount only breaks ties.
+function steamUrgencySort(a, b) {
+  const da = steamDaysLeft(a), db = steamDaysLeft(b);
+  if (da === null && db !== null) return 1;
+  if (db === null && da !== null) return -1;
+  if (da !== null && db !== null && da !== db) return da - db;
+  return (b.discount_pct || 0) - (a.discount_pct || 0);
+}
+
+// Short, plain wording. Only fires inside the 3-day window; a sale with three weeks left
+// gets no badge at all, because a badge on everything is a badge on nothing.
+function steamUrgencyLabel(s) {
+  const d = steamDaysLeft(s);
+  if (d === null || d > 3) return null;
+  if (d <= 0) return "ends today";
+  if (d === 1) return "ends tomorrow";
+  return d + " days left";
 }
 
 function renderSteam(data) {
   const active = (data.sales || []).filter((s) => s.active && !steamExpired(s));
   const hidden = new Set(ui.hiddenSteam || []);
-  const sales = active.filter((s) => !hidden.has(s.app_id));
+  const sales = active.filter((s) => !hidden.has(s.app_id)).sort(steamUrgencySort);
   const hiddenCount = active.length - sales.length;
   const meta = $("#steamMeta");
   const checked = data.last_checked
@@ -2689,6 +3148,12 @@ function renderSteam(data) {
     img.onerror = () => { thumb.classList.add("noimg"); thumb.dataset.title = s.title || ("App " + s.app_id); img.remove(); };
     thumb.appendChild(img);
     if (s.discount_pct) thumb.appendChild(el("span", "steam-disc", `-${s.discount_pct}%`));
+    const urgent = steamUrgencyLabel(s);
+    if (urgent) {
+      const flag = el("span", "steam-urgent", urgent);
+      if (steamDaysLeft(s) <= 0) flag.classList.add("today");
+      thumb.appendChild(flag);
+    }
     // red X (top-left) to hide this game; persists until "Refresh prices" restores all
     const hide = el("button", "steam-hide", "✕");
     hide.title = "Hide this game (Refresh prices brings it back)";
@@ -2710,7 +3175,9 @@ function renderSteam(data) {
       price.innerHTML = `<span class="muted">price not checked — Refresh</span>`;
     }
     body.appendChild(price);
-    body.appendChild(el("div", "steam-span muted", esc(fmtSaleSpan(s))));
+    body.appendChild(el("div",
+      steamUrgencyLabel(s) ? "steam-span soon" : "steam-span muted",
+      esc(fmtSaleSpan(s))));
     tile.appendChild(body);
 
     grid.appendChild(tile);

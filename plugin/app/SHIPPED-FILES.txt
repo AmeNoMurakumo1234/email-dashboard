@@ -21,6 +21,7 @@ dashboard/livecheck.py
 dashboard/mailview.py
 dashboard/migrate_concepts.py
 dashboard/questions.py
+dashboard/rule_host.py
 dashboard/ruleset.py
 dashboard/server.py
 dashboard/signin.py
@@ -80,5 +81,6 @@ tools/test_disposal_record.py
 tools/test_intake.py
 tools/test_msgraph_throttle.py
 tools/test_providers.py
+tools/test_sender_alias.py
 tools/test_separation.py
 tools/untrusted.py

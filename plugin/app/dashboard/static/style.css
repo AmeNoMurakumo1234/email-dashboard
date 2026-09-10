@@ -30,12 +30,23 @@ body {
   overflow-x: hidden;
   overflow-y: auto;
 }
+/* WRAP IS LOAD-BEARING - it is the fix for the sideways scroll, not a tidy-up.
+   Measured at an honestly-reporting 768px viewport: exactly one element's
+   right edge equalled the page scrollWidth of 956, and it was #scorePanel (left 547,
+   width 409) - the last child of this nowrap row, pushed clean off the viewport. Two
+   earlier readings blamed #heatmap because it is the widest thing on the page at
+   1136px, but it is clipped by .heat-wrap and a clipped child does not extend the
+   scroll box. Take flex-wrap off and the scoreboard goes back over the edge. */
 header {
   display: flex; justify-content: space-between; align-items: center;
+  flex-wrap: wrap; row-gap: 6px; column-gap: 12px;
   padding: 12px 28px; border-bottom: 1px solid var(--border);
   background: linear-gradient(180deg, #18202b, #131922);
   position: sticky; top: 0; z-index: 10;
 }
+/* A flex item defaults to min-width:auto, so it refuses to shrink below its own content
+   and shoves its siblings out even once the row is allowed to wrap. */
+header .title { min-width: 0; }
 h1 { font-size: 20px; margin: 0; }
 
 /* THE RUNNING VERSION, beside the title. Quiet on purpose - it is a reference you glance at
@@ -107,6 +118,11 @@ body > .panel { flex-shrink: 0; margin: 10px 28px 0; padding: 10px 18px; }
 .kpi.trash .n { color: var(--red); }
 .kpi.kept .n { color: var(--green); }
 .kpi.otp .n { color: var(--amber); }
+/* HELD BY THE GUARD - amber, not red. Nothing went wrong and nothing was deleted; the
+   disposer declined to move mail I proposed binning, and it is still in the inbox. Red
+   would read as an error to fix, which would push a person toward forcing it through -
+   the one thing a refusal exists to prevent. */
+.kpi.held .n { color: var(--amber); }
 
 .panel {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
@@ -400,11 +416,27 @@ td.acctcell { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
          font-size: 13px; font-weight: 600; }
 .wf-go:hover { background: #1d4ed8; }
 .wf-url { font-size: 10.5px; color: var(--muted); word-break: break-all; margin-top: 4px; }
+/* Says what a grouped row collapsed. Quieter than the reason it annotates, louder than
+   nothing - the point is that the absorption is visible, not that it shouts. */
+.wf-note { font-size: 11px; color: var(--muted); font-style: italic; margin-top: 5px; }
 .wf-blocked { font-size: 12px; color: #fbbf24; }
 .wf-ack { margin-top: 8px; font-size: 12px; }
 /* dated, real, and deliberately not shouting yet */
 .wf-upcoming { font-size: 12px; color: var(--muted); border-top: 1px dashed var(--border);
                padding-top: 8px; margin-top: 2px; }
+/* what the check could NOT read. Amber, not red: this is a gap in the measurement,
+   not a finding about the mail - but it must never be silent, because "0 outstanding"
+   from a check that read one message of eleven is the all-clear this panel must not give. */
+.wf-reach { font-size: 12.5px; color: #fbbf24; border: 1px solid #78350f;
+            background: rgba(120, 53, 15, 0.18); border-radius: 8px;
+            padding: 9px 11px; margin-bottom: 10px; line-height: 1.45; }
+.wf-reach-list { margin: 6px 0 0 0; padding-left: 18px; color: var(--muted); }
+.wf-reach-list li { margin: 2px 0; }
+/* provenance, not a warning. Reading a stored body is the panel working, not failing -
+   it is simply a weaker claim than reading the message off the server, and the reader is
+   told which one they are looking at. Muted on purpose: amber here would cry wolf. */
+.wf-source { font-size: 12px; color: var(--muted); border: 1px dashed var(--border);
+             border-radius: 8px; padding: 7px 10px; margin-bottom: 10px; line-height: 1.45; }
 
 /* ---- The record: every run day as one grid ---- */
 .heat { padding: 12px 14px; }
@@ -674,6 +706,16 @@ tr.msgrow.linked:hover { background: var(--panel-2); }
 .steam-price .was { color: var(--muted); text-decoration: line-through; font-size: 12.5px; }
 .steam-price .now { color: var(--green); font-weight: 700; }
 .steam-span { font-size: 11px; }
+/* A sale you lose by waiting. Sits under the discount badge (which is top-right) so the
+   two never overlap, and only ever renders inside the 3-day window. */
+.steam-urgent {
+  position: absolute; top: 30px; right: 6px;
+  color: #fff; font-weight: 700; font-size: 11px; white-space: nowrap;
+  background: var(--amber); border-radius: 5px; padding: 1px 7px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.4);
+}
+.steam-urgent.today { background: var(--red); }
+.steam-span.soon { color: var(--amber); font-weight: 600; }
 
 footer { padding: 6px 28px 10px; color: var(--muted); font-size: 11.5px; flex-shrink: 0; }
 /* Narrower screens: let chips wrap to fewer columns */
@@ -1052,6 +1094,11 @@ header h1 { font-size: 19px; }
 }
 /* Acknowledged AND still open: a real combination, and it has to look deliberate. */
 .badge.acked { color: var(--green); border-color: #3d997055; }
+/* Amber, not red. "Nothing will remind you again" is a fact to notice, not an alarm - the
+   red channel on this page belongs to money and to security. Named .nomail rather than
+   .quiet because .quiet-* already belongs to the sender-silence view, and one class name
+   meaning two different silences is how a stylesheet starts lying. */
+.badge.nomail { color: #fbbf24; border-color: #fbbf2455; }
 
 /* The legend is back with the chart it describes. */
 .topband .heat-legend { margin-top: 6px; font-size: 10.5px; }
@@ -1080,10 +1127,15 @@ header h1 { font-size: 19px; }
 .hdr-chip.open { border-color: #fbbf2488; color: #fbbf24; }
 .hdr-chip.host { border-color: #f8717188; color: #f87171; }
 .hdr-chip.q-open { border-color: var(--accent, #4a90d9); }
+/* Deliberately the calmest chip on the row. A refusal is the system working, not an alarm -
+   it is only worth a colour at all because a REPEATED one means a rule has stopped running. */
+.hdr-chip.refused { border-color: #94a3b888; color: #cbd5e1; }
+.ref-why { margin: 0 0 10px; max-width: 78ch; line-height: 1.45; }
 
 /* The attention modals get real room - that is the whole point of moving them. */
 #setupModal .modal-card, #wfModal .modal-card,
-#openModal .modal-card, #hostModal .modal-card { width: min(1100px, 94vw); }
+#openModal .modal-card, #hostModal .modal-card,
+#refModal .modal-card { width: min(1100px, 94vw); }
 #setupModal .panel, #wfModal .panel, #openModal .panel, #hostModal .panel {
   margin: 0; border: none; background: none; padding: 0;
 }

@@ -1,7 +1,7 @@
 """The disposer writes the deletion journal in the same call that moves the mail.
 
-WHAT THIS IS FOR. On 2026-08-08 I found six messages sitting in Trash with no line in
-`deletion-journal.md`. Nothing was destroyed - Trash is recoverable and the store had all six
+WHAT THIS IS FOR. Several messages were once found sitting in Trash with no line in
+`deletion-journal.md`. Nothing was destroyed - Trash is recoverable and the store had every one
 recorded correctly as `trashed` - but "everything is journaled" is the promise this lane makes
 about deletion, and for a night it was not kept.
 

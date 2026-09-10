@@ -142,6 +142,54 @@ def normalize_status(raw):
     return "CONNECTED" if s.lower() in _STATUS_OK else s
 
 
+def normalise_messages(messages):
+    """Fix the SPELLING of the keys and values every instrument groups on, once, at the door.
+
+    Two normalisations, both of which exist because a wrong spelling here never errors - it
+    produces a confident, specific, smaller-than-true number somewhere far away.
+
+    1. ACCEPT `from` AS AN ALIAS FOR `sender`. The store reads `sender`; hand-written run JSON
+       drifts to `from` (it reads naturally next to `subject`). Nothing errored - the column
+       just went NULL, so the From column was blank and the top-senders view under-counted,
+       silently, for four consecutive runs.
+
+    2. UNFOLD FOLDED HEADER WHITESPACE, on the subject AND on the sender. RFC 5322 breaks a
+       long header across lines with the continuation indented, so a captured copy can carry a
+       literal "\r\n " inside the value; a reader is meant to join it back before using it.
+
+       The subject half has been here for a while; the sender half was missing, four lines away
+       from its own sibling. That is the whole a-fix-does-not-reach-its-siblings shape: a defect
+       is a SHAPE, not a line, and this one had two fields and got one.
+
+       Measured on a real store when it surfaced: a handful of folded spellings across a few
+       dozen rows. It showed up in the refusals panel, on the row that proved a standing
+       auto-trash rule had quietly stopped executing - the true row read
+       `runs=8 self_feeding=True` and its folded twin read `runs=1 self_feeding=False`,
+       resetting the clock and dropping the flag. An instrument that dims in proportion to the
+       severity of what it exists to reveal.
+
+       NOT reached by this: a sender split by CASE alone ('Example.com' vs 'example.com') stays
+       split, because unfolding whitespace does nothing for it. Case-folding a display name is a
+       bigger claim than unfolding a header the RFC says to unfold, and it sits upstream of a
+       deletion decision - so it is left alone rather than swept in, and named here so this is
+       not read as closing sender drift generally.
+
+    An ordinary value comes back unchanged, and that control is a test leg - a normalisation
+    that rewrites clean input would be a new bug, not a fix.
+
+    Applied UNCONDITIONALLY to both fields, which is what the subject half already did. A
+    conditional "only if it contains a newline" would quietly stop collapsing the double
+    spaces and trimming the edges that the subject half has relied on since it landed.
+    """
+    for m in messages or []:
+        if not m.get("sender") and m.get("from"):
+            m["sender"] = m["from"]
+        for field in ("subject", "sender"):
+            if m.get(field):
+                m[field] = " ".join(str(m[field]).split())
+    return messages
+
+
 def _receipt_ids(data):
     """Message-IDs from a receipt payload, or None if this is not a receipt.
 
@@ -248,20 +296,8 @@ def main():
             impossible.append("%s: trashed %d + kept %d > fetched %d"
                               % (who, gone, kept_n, got))
 
+    normalise_messages(messages)
     for m in messages:
-        # ACCEPT `from` AS AN ALIAS FOR `sender`. The store reads `sender`; the hand-written
-        # run JSON drifted to `from` (it reads naturally next to `subject`). Nothing errored -
-        # the column just went NULL, so the dashboard's From column was blank and the
-        # top-senders view under-counted, silently, for four consecutive runs.
-        # A key nobody validates is a silent data loss; accept both spellings and move on.
-        if not m.get("sender") and m.get("from"):
-            m["sender"] = m["from"]
-        # Collapse folded-header whitespace. A long Subject is folded across lines in the
-        # raw header, so a captured copy can carry a literal "\r\n " mid-subject. It renders
-        # as a stray gap and it defeats exact-match lookups. It made correctly-linked
-        # messages report as mismatches during verification.
-        if m.get("subject"):
-            m["subject"] = " ".join(str(m["subject"]).split())
         if not m.get("category"):
             m["category"] = categorize(m.get("reason"), m.get("subject"))
 

@@ -99,9 +99,6 @@ class ConnectorIsNotAFailure(unittest.TestCase):
         self.assertTrue(providers.fetches_itself({"provider": "gmail"}))
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class DelegationTranslatesOrRefuses(unittest.TestCase):
     """The dangerous half of delegating: a flag that quietly does not survive the trip."""
@@ -144,3 +141,11 @@ class DelegationTranslatesOrRefuses(unittest.TestCase):
         argv = mailtool.graph_argv("fetch", self.args(unseen=False, no_snippets=False))
         self.assertNotIn("--unseen", argv)
         self.assertNotIn("--no-snippets", argv)
+
+# THE RUNNER MUST BE THE LAST THING IN THE FILE. It used to sit in the middle, and
+# `unittest.main()` exits the process the moment it finishes - so every class defined
+# below it was never even DEFINED on a direct run. Measured across five
+# suites: a direct `python <file>` ran 12 tests here where `python -m unittest` ran 16.
+# A passing suite that quietly omits part of itself is a green covering work it did not do.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

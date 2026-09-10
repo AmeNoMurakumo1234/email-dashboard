@@ -142,9 +142,6 @@ class StrictRefuses(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr[-400:])
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class StagedByArrival(unittest.TestCase):
     """A historical batch belongs to the days it happened on, not to the day we read it.
@@ -199,3 +196,11 @@ class StagedByArrival(unittest.TestCase):
         r, _ = self.ingest(doc, "--by-arrival")
         self.assertEqual(r.returncode, 2)
         self.assertIn("no readable date", r.stderr)
+
+# THE RUNNER MUST BE THE LAST THING IN THE FILE. It used to sit in the middle, and
+# `unittest.main()` exits the process the moment it finishes - so every class defined
+# below it was never even DEFINED on a direct run. Measured across five
+# suites: a direct `python <file>` ran 12 tests here where `python -m unittest` ran 15.
+# A passing suite that quietly omits part of itself is a green covering work it did not do.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
